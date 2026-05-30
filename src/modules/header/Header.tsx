@@ -43,6 +43,12 @@ type Props = {
   onClose: (id: number) => void;
   /** Promote a preview (transient) tab to persistent. */
   onPin: (id: number) => void;
+  /** Move a dragged tab to a new position (insertion gap index). */
+  onReorder: (fromId: number, toGapIndex: number) => void;
+  /** Lock/unlock a tab to the front of the tab bar. */
+  onTogglePin: (id: number) => void;
+  /** Set or clear the accent color stripe on a tab. */
+  onSetColor: (id: number, color: string | null) => void;
   onToggleSidebar: () => void;
   onSplit: (dir: "row" | "col") => void;
   /** Active tab is a terminal and below the per-tab pane cap. */
@@ -67,6 +73,9 @@ export function Header({
   onNewGitGraph,
   onClose,
   onPin,
+  onReorder,
+  onTogglePin,
+  onSetColor,
   onToggleSidebar,
   onSplit,
   canSplit,
@@ -200,6 +209,9 @@ export function Header({
           onNewGitGraph={onNewGitGraph}
           onClose={onClose}
           onPin={onPin}
+          onReorder={onReorder}
+          onTogglePin={onTogglePin}
+          onSetColor={onSetColor}
           compact={compact}
         />
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />

@@ -25,6 +25,8 @@ export type TerminalTab = {
   activeLeafId: number;
   /** AI agent cannot read buffer / context of this terminal. */
   private?: boolean;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type EditorTab = {
@@ -39,6 +41,8 @@ export type EditorTab = {
    * is replaced by the next single-click rather than accumulating.
    */
   preview: boolean;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type PreviewTab = {
@@ -46,6 +50,8 @@ export type PreviewTab = {
   kind: "preview";
   title: string;
   url: string;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type MarkdownTab = {
@@ -53,6 +59,8 @@ export type MarkdownTab = {
   kind: "markdown";
   title: string;
   path: string;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type AiDiffStatus = "pending" | "approved" | "rejected";
@@ -69,6 +77,8 @@ export type AiDiffTab = {
   approvalId: string;
   status: AiDiffStatus;
   isNewFile: boolean;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type GitDiffTab = {
@@ -79,6 +89,8 @@ export type GitDiffTab = {
   repoRoot: string;
   mode: "-" | "+";
   originalPath: string | null;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type GitHistoryTab = {
@@ -86,6 +98,8 @@ export type GitHistoryTab = {
   kind: "git-history";
   title: string;
   repoRoot: string;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type GitCommitFileDiffTab = {
@@ -98,6 +112,8 @@ export type GitCommitFileDiffTab = {
   subject: string;
   path: string;
   originalPath: string | null;
+  pinned?: boolean;
+  color?: string;
 };
 
 export type Tab =
@@ -116,6 +132,8 @@ export type TabPatch = Partial<{
   path: string;
   dirty: boolean;
   url: string;
+  pinned: boolean;
+  color: string | null;
 }>;
 
 function basename(path: string): string {
@@ -149,6 +167,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   });
   const [activeId, setActiveId] = useState(1);
   const nextIdRef = useRef(3);
+
+  const initFromSession = useCallback(
+    (restoredTabs: Tab[], restoredActiveId: number, nextId: number) => {
+      setTabs(restoredTabs);
+      setActiveId(restoredActiveId);
+      nextIdRef.current = nextId;
+    },
+    [],
+  );
   const tabsRef = useRef(tabs);
 
   useEffect(() => {
@@ -794,10 +821,56 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     for (const lid of toDispose) disposeSession(lid);
   }, []);
 
+  const reorderTab = useCallback((fromId: number, toGapIndex: number) => {
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.id === fromId);
+      if (from === -1) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(from, 1);
+      let target = toGapIndex > from ? toGapIndex - 1 : toGapIndex;
+      target = Math.max(0, Math.min(target, next.length));
+      if (target === from) return prev;
+      // Clamp to legal zone: pinned tabs stay in the pinned prefix, unpinned stay after.
+      const pinnedEnd = next.filter((t) => t.pinned).length;
+      if (moved.pinned) target = Math.min(target, pinnedEnd);
+      else target = Math.max(target, pinnedEnd);
+      next.splice(target, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const setTabColor = useCallback((id: number, color: string | null) => {
+    setTabs((curr) =>
+      curr.map((t) => t.id === id ? { ...t, color: color ?? undefined } : t),
+    );
+  }, []);
+
+  const toggleTabPin = useCallback((id: number) => {
+    setTabs((prev) => {
+      const target = prev.find((t) => t.id === id);
+      if (!target) return prev;
+      const nowPinned = !target.pinned;
+      const withToggled = prev.map((t) =>
+        t.id === id ? { ...t, pinned: nowPinned } : t,
+      );
+      const alreadyPinnedCount = withToggled.filter(
+        (t) => t.pinned && t.id !== id,
+      ).length;
+      const insertAt = alreadyPinnedCount;
+      const without = withToggled.filter((t) => t.id !== id);
+      without.splice(insertAt, 0, { ...target, pinned: nowPinned });
+      return without;
+    });
+  }, []);
+
   return {
     tabs,
     activeId,
     setActiveId,
+    initFromSession,
+    reorderTab,
+    setTabColor,
+    toggleTabPin,
     newTab,
     newAgentTab,
     newPrivateTab,

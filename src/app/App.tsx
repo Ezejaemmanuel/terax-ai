@@ -78,7 +78,7 @@ import {
   useSourceControl,
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
-import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
+import { MAX_PANES_PER_TAB, useTabs, useTabSession, useWorkspaceCwd } from "@/modules/tabs";
 import {
   clearFocusedTerminal,
   disposeSession,
@@ -181,6 +181,10 @@ export default function App() {
     tabs,
     activeId,
     setActiveId,
+    initFromSession,
+    reorderTab,
+    setTabColor,
+    toggleTabPin,
     newTab,
     newAgentTab,
     newPrivateTab,
@@ -473,6 +477,8 @@ export default function App() {
     void useAgentsStore.getState().hydrate();
     void useSnippetsStore.getState().hydrate();
   }, [hydrateSessions]);
+
+  useTabSession(tabs, activeId, initFromSession);
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -1025,6 +1031,7 @@ export default function App() {
 
   const handleCloseTabOrPane = useCallback(() => {
     const t = tabsRef.current.find((x) => x.id === activeId);
+    if (t?.pinned) return; // pinned tabs cannot be closed with keyboard shortcut
     if (t?.kind === "terminal" && leafIds(t.paneTree).length > 1) {
       closeActivePane(activeId);
       return;
@@ -1445,6 +1452,9 @@ export default function App() {
             onNewGitGraph={openGitGraphFromContext}
             onClose={handleClose}
             onPin={pinTab}
+            onReorder={reorderTab}
+            onTogglePin={toggleTabPin}
+            onSetColor={setTabColor}
             onToggleSidebar={toggleSidebar}
             onSplit={splitActivePaneInActiveTab}
             canSplit={
