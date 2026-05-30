@@ -20,6 +20,7 @@ export type PersistedSession = {
 
 export async function saveTabSession(s: PersistedSession): Promise<void> {
   await store.set("session", s);
+  await store.save();
 }
 
 export async function loadTabSession(): Promise<PersistedSession | null> {

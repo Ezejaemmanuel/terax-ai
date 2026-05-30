@@ -133,9 +133,22 @@ export function useTabSession(
         .map(serializeTab)
         .filter(Boolean) as PersistedTab[];
       void saveTabSession({ tabs: serializable, activeId });
-    }, 300);
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
+    }, 100);
+    // Do NOT clear the timer on cleanup — let the pending save fire even if tabs
+    // change again quickly. The next effect run replaces it anyway.
+  }, [tabs, activeId]);
+
+  // Final save when the window is about to close, in case the 100ms timer
+  // hasn't fired yet.
+  useEffect(() => {
+    const handleUnload = () => {
+      if (!initialized.current) return;
+      const serializable = tabs
+        .map(serializeTab)
+        .filter(Boolean) as PersistedTab[];
+      void saveTabSession({ tabs: serializable, activeId });
     };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
   }, [tabs, activeId]);
 }
