@@ -24,7 +24,7 @@ jobs:
             args: ""
             rust-target: ""
           - platform: windows-latest
-            args: ""
+            args: "--bundles nsis"
             rust-target: ""
 
     runs-on: ${{ matrix.platform }}
