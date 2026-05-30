@@ -72,6 +72,7 @@ import {
   type ShortcutHandlers,
   type ShortcutId,
 } from "@/modules/shortcuts";
+import { AiHistoryPanel } from "@/modules/ai-history";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import {
   SourceControlPanel,
@@ -1498,14 +1499,28 @@ export default function App() {
                         onAttachToAgent={handleAttachFileToAgent}
                         onOpenMarkdownPreview={openMarkdownPreview}
                       />
-                    ) : (
+                    ) : sidebarView === "source-control" ? (
                       <SourceControlPanel
                         open
                         sourceControl={sourceControl}
                         onOpenDiff={openGitDiffTab}
                         onOpenGitGraph={openGitGraphFromContext}
                       />
-                    )}
+                    ) : sidebarView === "claude-history" ? (
+                      <AiHistoryPanel
+                        tool="claude"
+                        newTab={newTab}
+                        setActiveId={setActiveId}
+                        tabs={tabs}
+                      />
+                    ) : sidebarView === "codex-history" ? (
+                      <AiHistoryPanel
+                        tool="codex"
+                        newTab={newTab}
+                        setActiveId={setActiveId}
+                        tabs={tabs}
+                      />
+                    ) : null}
                   </div>
                   <SidebarRail
                     activeView={sidebarView}

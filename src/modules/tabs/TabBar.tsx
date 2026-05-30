@@ -33,6 +33,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, useEffect, useRef, useState } from "react";
+import { useAgentStore } from "@/modules/agents/store/agentStore";
 import type { EditorTab, Tab } from "./lib/useTabs";
 
 const TAB_COLORS = [
@@ -112,6 +113,9 @@ export function TabBar({
     setDropGap(null);
     document.body.style.userSelect = "";
   };
+
+  // Live Claude Code / Codex status per terminal leaf — keyed by leafId.
+  const agentSessions = useAgentStore((s: { sessions: Record<number, import("@/modules/agents/lib/types").AgentSession> }) => s.sessions);
 
   // Horizontal wheel scroll without holding shift.
   useEffect(() => {
@@ -244,6 +248,22 @@ export function TabBar({
                               className="size-1.5 shrink-0 rounded-full bg-foreground/70"
                             />
                           ) : null}
+                          {/* Live Claude Code / Codex status dot */}
+                          {t.kind === "terminal" && (() => {
+                            const session = agentSessions[t.activeLeafId];
+                            if (!session) return null;
+                            return (
+                              <span
+                                aria-label={session.status === "waiting" ? "Waiting for input" : "Working"}
+                                className={cn(
+                                  "size-1.5 shrink-0 animate-pulse rounded-full",
+                                  session.status === "waiting"
+                                    ? "bg-amber-400"
+                                    : "bg-emerald-500",
+                                )}
+                              />
+                            );
+                          })()}
                           {t.pinned ? (
                             <HugeiconsIcon
                               icon={MapPinIcon}

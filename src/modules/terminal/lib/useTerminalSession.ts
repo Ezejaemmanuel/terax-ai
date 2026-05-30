@@ -1,4 +1,6 @@
 import { ensureMonoFontsLoaded } from "@/lib/fonts";
+import { osNotify } from "@/modules/agents/lib/notify";
+import { useAgentStore } from "@/modules/agents/store/agentStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -246,7 +248,30 @@ function bindLeafToSlot(leafId: number, s: Session): void {
       // 7 emitted by untrusted command output (remote SSH, `cat` of an
       // attacker file, etc.).
       const shellState = createShellIntegrationState();
-      const prompt = registerPromptTracker(term, shellState);
+      // Show a system notification when a long-running command finishes
+      // (> 30 seconds and app is unfocused). Skipped if:
+      //   1. The user has disabled the setting.
+      //   2. An AI agent (Claude Code / Codex) was running in this terminal —
+      //      the agent notification bell already handles that case and firing
+      //      both would be double-notification noise.
+      const LONG_CMD_MS = 30_000;
+      const prompt = registerPromptTracker(term, shellState, (durationMs) => {
+        const prefs = usePreferencesStore.getState();
+        if (!prefs.terminalCommandNotifications) return;
+        if (durationMs < LONG_CMD_MS) return;
+        if (document.hasFocus()) return; // only notify when app is in background
+        // Skip if an AI agent session is active (or was recently active) for
+        // this leaf. We check both current sessions and recent notifications.
+        const agentState = useAgentStore.getState();
+        const hasActiveAgent = !!agentState.sessions[leafId];
+        const recentAgentFinish = agentState.notifications.some(
+          (n) => n.leafId === leafId && Date.now() - n.at < 10_000,
+        );
+        if (hasActiveAgent || recentAgentFinish) return;
+        const cwd = s.lastCwd ?? "";
+        const label = cwd.split(/[\\/]/).filter(Boolean).pop() ?? "terminal";
+        void osNotify("Command finished", `Long-running command completed in ${label}`);
+      });
       const cwd = registerCwdHandler(
         term,
         (next) => {

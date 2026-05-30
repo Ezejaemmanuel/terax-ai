@@ -1,9 +1,12 @@
 import { getLaunchDir } from "@/lib/launchDir";
 import { leafIds } from "@/modules/terminal/lib/panes";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 import { loadTabSession, saveTabSession, type PersistedTab } from "./tabStore";
 import type { Tab } from "./useTabs";
+
+const PERIODIC_SAVE_MS = 20_000;
 
 function serializeTab(t: Tab): PersistedTab | null {
   switch (t.kind) {
@@ -124,31 +127,83 @@ export function useTabSession(
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Debounced save on every tab/activeId change (skip until first restore attempt done)
+  // Keep a ref to the latest tabs/activeId so the close handler and interval
+  // always read current values without re-registering their listeners.
+  const latestTabs = useRef(tabs);
+  const latestActiveId = useRef(activeId);
+  useEffect(() => {
+    latestTabs.current = tabs;
+    latestActiveId.current = activeId;
+  }, [tabs, activeId]);
+
+  // dirty=true as soon as initialization is done AND tabs/activeId change.
+  // Note: the flag is set unconditionally once initialized — even during the
+  // render cycle that delivers the restored state — so that first-launch saves
+  // are also captured correctly.
+  const dirty = useRef(false);
+  useEffect(() => {
+    // Mark dirty as soon as the initialization effect has completed (even if
+    // initialized.current was just set to true on this same render cycle).
+    // We use a microtask so that the initialized.current assignment in the
+    // restore effect (which runs in the same React flush) is visible first.
+    Promise.resolve().then(() => {
+      if (initialized.current) dirty.current = true;
+    });
+  }, [tabs, activeId]);
+
+  // Helper: serialise current state and save with a 3-second safety timeout.
+  // The timeout ensures the close handler never hangs the window indefinitely
+  // if the Tauri IPC stalls (disk full, backend busy, etc.).
+  const flushSave = () => {
+    const serializable = latestTabs.current
+      .map(serializeTab)
+      .filter(Boolean) as PersistedTab[];
+    const save = saveTabSession({ tabs: serializable, activeId: latestActiveId.current });
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
+    // Race — if save wins, great. If timeout wins, we proceed without blocking.
+    return Promise.race([save, timeout]);
+  };
+
+  // Layer 1 — debounced save (100ms) on every tab/activeId change.
   useEffect(() => {
     if (!initialized.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      const serializable = tabs
-        .map(serializeTab)
-        .filter(Boolean) as PersistedTab[];
-      void saveTabSession({ tabs: serializable, activeId });
+      dirty.current = false;
+      void flushSave();
     }, 100);
-    // Do NOT clear the timer on cleanup — let the pending save fire even if tabs
-    // change again quickly. The next effect run replaces it anyway.
-  }, [tabs, activeId]);
+  }, [tabs, activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Final save when the window is about to close, in case the 100ms timer
-  // hasn't fired yet.
+  // Layer 2 — periodic checkpoint every 20 seconds.
+  // Only writes if something actually changed (dirty flag), so idle sessions
+  // generate zero IPC calls.
   useEffect(() => {
-    const handleUnload = () => {
-      if (!initialized.current) return;
-      const serializable = tabs
-        .map(serializeTab)
-        .filter(Boolean) as PersistedTab[];
-      void saveTabSession({ tabs: serializable, activeId });
-    };
-    window.addEventListener("beforeunload", handleUnload);
-    return () => window.removeEventListener("beforeunload", handleUnload);
-  }, [tabs, activeId]);
+    const id = setInterval(() => {
+      if (!initialized.current || !dirty.current) return;
+      dirty.current = false;
+      void flushSave();
+    }, PERIODIC_SAVE_MS);
+    return () => clearInterval(id);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Layer 3 — guaranteed save on graceful close (X button, Alt+F4).
+  // The 3-second timeout inside flushSave ensures the window always closes
+  // even if the IPC stalls.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const unlistenPromise = win.onCloseRequested(async (event) => {
+      event.preventDefault();
+      try {
+        await flushSave();
+      } finally {
+        // always close, even if save timed out
+        await win.close();
+      }
+    });
+    // Clean up on page unload — not on component unmount — to avoid
+    // a known Tauri bug where calling unlisten() breaks window closing.
+    const cleanup = () => { void unlistenPromise.then((fn) => fn()); };
+    window.addEventListener("unload", cleanup);
+    return () => window.removeEventListener("unload", cleanup);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 }

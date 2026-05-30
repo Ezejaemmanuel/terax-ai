@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod ai_history;
 pub mod fs;
 pub mod git;
 pub mod net;

@@ -26,6 +26,7 @@ import {
   setEditorAutoSaveDelay,
   setRestoreWindowState,
   setShowHidden,
+  setTerminalCommandNotifications,
   setTerminalFontFamily,
   setTerminalLetterSpacing,
   setTerminalFontSize,
@@ -82,6 +83,7 @@ export function GeneralSection() {
   );
   const terminalFontSize = usePreferencesStore((s) => s.terminalFontSize);
   const terminalScrollback = usePreferencesStore((s) => s.terminalScrollback);
+  const terminalCommandNotifications = usePreferencesStore((s) => s.terminalCommandNotifications);
   const zoomLevel = usePreferencesStore((s) => s.zoomLevel);
   const agentNotifications = usePreferencesStore((s) => s.agentNotifications);
 
@@ -314,6 +316,15 @@ export function GeneralSection() {
               ))}
             </SelectContent>
           </Select>
+        </SettingRow>
+        <SettingRow
+          title="Long-running command notifications"
+          description="Show a desktop notification when a shell command takes longer than 30 seconds and Terax is in the background. Skipped automatically when Claude Code or Codex is the running process."
+        >
+          <Switch
+            checked={terminalCommandNotifications}
+            onCheckedChange={(v) => void setTerminalCommandNotifications(v)}
+          />
         </SettingRow>
       </div>
 

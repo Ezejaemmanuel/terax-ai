@@ -42,21 +42,31 @@ export type PromptTracker = {
 export function registerPromptTracker(
   term: Terminal,
   state?: ShellIntegrationState,
+  onCommandFinished?: (durationMs: number) => void,
 ): PromptTracker {
   let marker: IMarker | null = null;
+  // Track when the current command started (OSC 133 B/C).
+  let commandStartedAt: number | null = null;
+
   const d = term.parser.registerOscHandler(133, (data) => {
     // OSC 133 A — start of new prompt (between commands).
     if (data.startsWith("A")) {
       if (state) state.inCommand = false;
+      if (commandStartedAt != null && onCommandFinished) {
+        const duration = Date.now() - commandStartedAt;
+        onCommandFinished(duration);
+      }
+      commandStartedAt = null;
       marker?.dispose();
       marker = term.registerMarker(0);
     } else if (data.startsWith("B")) {
-      // OSC 133 B — command begins. From here on, treat all output as
-      // untrusted until we see D (command exit) or the next A (new prompt).
+      // OSC 133 B — command begins.
       if (state) state.inCommand = true;
+      commandStartedAt = Date.now();
     } else if (data.startsWith("C")) {
       // OSC 133 C — command pre-execution marker; still inside command.
       if (state) state.inCommand = true;
+      if (commandStartedAt == null) commandStartedAt = Date.now();
     } else if (data.startsWith("D")) {
       // OSC 133 D — command ends.
       if (state) state.inCommand = false;
