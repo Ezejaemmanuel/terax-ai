@@ -200,21 +200,28 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
 
   const initialLang = useMemo(() => resolveLanguageSync(path), [path]);
   const extensions = useMemo(
-    () => [
-      ...SHARED_EXT,
-      languageCompartment.of(initialLang ?? []),
-      ...READONLY_EXT,
-      unifiedMergeView({
-        original: originalContent,
-        mergeControls: false,
-        highlightChanges: true,
-        gutter: true,
-        syntaxHighlightDeletions: true,
-        collapseUnchanged: { margin: 3, minSize: 6 },
-      }),
-      DIFF_THEME,
-    ],
-    [originalContent, initialLang],
+    () => {
+      const lineCount = Math.max(
+        originalContent.split("\n").length,
+        modifiedContent.split("\n").length,
+      );
+      const shouldCollapse = lineCount > 2000;
+      return [
+        ...SHARED_EXT,
+        languageCompartment.of(initialLang ?? []),
+        ...READONLY_EXT,
+        unifiedMergeView({
+          original: originalContent,
+          mergeControls: false,
+          highlightChanges: true,
+          gutter: true,
+          syntaxHighlightDeletions: true,
+          collapseUnchanged: shouldCollapse ? { margin: 3, minSize: 6 } : undefined,
+        }),
+        DIFF_THEME,
+      ];
+    },
+    [originalContent, modifiedContent, initialLang],
   );
 
   // Resolve and apply syntax highlighting asynchronously when the language pack
