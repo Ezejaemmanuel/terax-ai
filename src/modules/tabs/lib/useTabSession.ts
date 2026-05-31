@@ -191,14 +191,15 @@ export function useTabSession(
   // even if the IPC stalls.
   useEffect(() => {
     const win = getCurrentWindow();
-    const unlistenPromise = win.onCloseRequested(async (event) => {
+    const unlistenPromise = win.onCloseRequested((event) => {
       event.preventDefault();
-      try {
-        await flushSave();
-      } finally {
-        // always close, even if save timed out
-        await win.close();
-      }
+      // Fire-and-forget: save with 3s timeout then close.
+      // We do NOT await win.close() because that is itself an IPC call and
+      // could hang if the IPC layer is busy. Scheduling it via Promise lets
+      // the event handler return immediately while the async work continues.
+      void flushSave()
+        .catch(() => {})
+        .finally(() => { void win.close(); });
     });
     // Clean up on page unload — not on component unmount — to avoid
     // a known Tauri bug where calling unlisten() breaks window closing.

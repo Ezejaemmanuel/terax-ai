@@ -98,96 +98,83 @@ fn read_claude_session_info(jsonl_path: &Path) -> (Option<String>, Option<String
 }
 
 #[tauri::command]
-pub fn ai_history_claude() -> Vec<AiProject> {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return vec![],
-    };
-    let projects_dir = home.join(".claude").join("projects");
-    if !projects_dir.exists() {
-        return vec![];
-    }
-
-    // Group sessions by their actual CWD (read from JSONL content).
-    let mut project_map: HashMap<String, AiProject> = HashMap::new();
-
-    let project_dirs = match fs::read_dir(&projects_dir) {
-        Ok(e) => e,
-        Err(_) => return vec![],
-    };
-
-    for project_entry in project_dirs.filter_map(|e| e.ok()) {
-        let project_dir = project_entry.path();
-        if !project_dir.is_dir() {
-            continue;
+pub async fn ai_history_claude() -> Vec<AiProject> {
+    tokio::task::spawn_blocking(|| {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return vec![],
+        };
+        let projects_dir = home.join(".claude").join("projects");
+        if !projects_dir.exists() {
+            return vec![];
         }
 
-        let session_entries = match fs::read_dir(&project_dir) {
+        let mut project_map: HashMap<String, AiProject> = HashMap::new();
+
+        let project_dirs = match fs::read_dir(&projects_dir) {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(_) => return vec![],
         };
 
-        for s_entry in session_entries.filter_map(|e| e.ok()) {
-            let s_path = s_entry.path();
-            // Skip subdirectories (subagents/, tool-results/)
-            if s_path.is_dir() {
+        for project_entry in project_dirs.filter_map(|e| e.ok()) {
+            let project_dir = project_entry.path();
+            if !project_dir.is_dir() {
                 continue;
             }
-            if s_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
+            let session_entries = match fs::read_dir(&project_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for s_entry in session_entries.filter_map(|e| e.ok()) {
+                let s_path = s_entry.path();
+                if s_path.is_dir() {
+                    continue;
+                }
+                if s_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let session_id = match s_path.file_stem().and_then(|s| s.to_str()) {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                let (title, cwd_opt) = read_claude_session_info(&s_path);
+                let title = title.unwrap_or_else(|| "Untitled session".to_string());
+                let full_path = match cwd_opt {
+                    Some(c) if !c.is_empty() => c,
+                    _ => continue,
+                };
+                let updated_at = file_mtime_ms_str(&s_path);
+                let session = AiSession {
+                    id: session_id,
+                    title,
+                    updated_at,
+                    cwd: full_path.clone(),
+                };
+                let name = short_name(&full_path);
+                project_map
+                    .entry(full_path.clone())
+                    .and_modify(|p| p.sessions.push(session.clone()))
+                    .or_insert_with(|| AiProject {
+                        name,
+                        full_path,
+                        sessions: vec![session],
+                    });
             }
-
-            let session_id = match s_path.file_stem().and_then(|s| s.to_str()) {
-                Some(id) => id.to_string(),
-                None => continue,
-            };
-
-            let (title, cwd_opt) = read_claude_session_info(&s_path);
-            let title = title.unwrap_or_else(|| "Untitled session".to_string());
-
-            // Use the CWD read directly from the JSONL content.
-            // This avoids the lossy path-encoding decode that breaks hyphenated paths.
-            let full_path = match cwd_opt {
-                Some(c) if !c.is_empty() => c,
-                // Last-resort fallback: skip sessions with no readable cwd
-                _ => continue,
-            };
-
-            let updated_at = file_mtime_ms_str(&s_path);
-            let session = AiSession {
-                id: session_id,
-                title,
-                updated_at,
-                cwd: full_path.clone(),
-            };
-
-            let name = short_name(&full_path);
-            project_map
-                .entry(full_path.clone())
-                .and_modify(|p| p.sessions.push(session.clone()))
-                .or_insert_with(|| AiProject {
-                    name,
-                    full_path,
-                    sessions: vec![session],
-                });
         }
-    }
 
-    let mut projects: Vec<AiProject> = project_map.into_values().collect();
-
-    // Sort sessions newest first within each project.
-    for p in &mut projects {
-        p.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    }
-
-    // Sort projects by their most-recent session.
-    projects.sort_by(|a, b| {
-        let a_ts = a.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
-        let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
-        b_ts.cmp(a_ts)
-    });
-
-    projects
+        let mut projects: Vec<AiProject> = project_map.into_values().collect();
+        for p in &mut projects {
+            p.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        }
+        projects.sort_by(|a, b| {
+            let a_ts = a.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            b_ts.cmp(a_ts)
+        });
+        projects
+    })
+    .await
+    .unwrap_or_default()
 }
 
 // Build a map of session_id → file path by scanning the Codex sessions directory
@@ -274,95 +261,88 @@ fn read_codex_cwd(jsonl_path: &Path) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn ai_history_codex() -> Vec<AiProject> {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return vec![],
-    };
-    let codex_dir = home.join(".codex");
-    if !codex_dir.exists() {
-        return vec![];
-    }
+pub async fn ai_history_codex() -> Vec<AiProject> {
+    tokio::task::spawn_blocking(|| {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return vec![],
+        };
+        let codex_dir = home.join(".codex");
+        if !codex_dir.exists() {
+            return vec![];
+        }
 
-    let index_path = codex_dir.join("session_index.jsonl");
-    let sessions_dir = codex_dir.join("sessions");
+        let index_path = codex_dir.join("session_index.jsonl");
+        let sessions_dir = codex_dir.join("sessions");
 
-    let index_content = match fs::read_to_string(&index_path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-
-    // Build the session-id → file-path index once (O(files) instead of O(sessions × files)).
-    let file_index = if sessions_dir.exists() {
-        build_codex_file_index(&sessions_dir)
-    } else {
-        HashMap::new()
-    };
-
-    // Group sessions by cwd into projects.
-    let mut project_map: HashMap<String, AiProject> = HashMap::new();
-
-    for line in index_content.lines() {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
+        let index_content = match fs::read_to_string(&index_path) {
+            Ok(c) => c,
+            Err(_) => return vec![],
         };
 
-        let id = match entry.get("id").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        let title = entry
-            .get("thread_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Untitled session")
-            .to_string();
-        // ISO 8601 strings sort lexicographically — no chrono dependency needed.
-        let updated_at = entry
-            .get("updated_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Look up the session file in O(1) using the pre-built index.
-        let cwd = file_index
-            .get(&id)
-            .and_then(|p| read_codex_cwd(p))
-            .unwrap_or_default();
-
-        let full_path = if cwd.is_empty() {
-            home.to_string_lossy().to_string()
+        let file_index = if sessions_dir.exists() {
+            build_codex_file_index(&sessions_dir)
         } else {
-            cwd
-        };
-        let name = short_name(&full_path);
-        let session = AiSession {
-            id,
-            title,
-            updated_at,
-            cwd: full_path.clone(),
+            HashMap::new()
         };
 
-        project_map
-            .entry(full_path.clone())
-            .and_modify(|p| p.sessions.push(session.clone()))
-            .or_insert_with(|| AiProject {
-                name,
-                full_path,
-                sessions: vec![session],
-            });
-    }
+        let mut project_map: HashMap<String, AiProject> = HashMap::new();
 
-    let mut projects: Vec<AiProject> = project_map.into_values().collect();
+        for line in index_content.lines() {
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let id = match entry.get("id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let title = entry
+                .get("thread_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Untitled session")
+                .to_string();
+            let updated_at = entry
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cwd = file_index
+                .get(&id)
+                .and_then(|p| read_codex_cwd(p))
+                .unwrap_or_default();
+            let full_path = if cwd.is_empty() {
+                home.to_string_lossy().to_string()
+            } else {
+                cwd
+            };
+            let name = short_name(&full_path);
+            let session = AiSession {
+                id,
+                title,
+                updated_at,
+                cwd: full_path.clone(),
+            };
+            project_map
+                .entry(full_path.clone())
+                .and_modify(|p| p.sessions.push(session.clone()))
+                .or_insert_with(|| AiProject {
+                    name,
+                    full_path,
+                    sessions: vec![session],
+                });
+        }
 
-    for p in &mut projects {
-        p.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    }
-
-    projects.sort_by(|a, b| {
-        let a_ts = a.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
-        let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
-        b_ts.cmp(a_ts)
-    });
-
-    projects
+        let mut projects: Vec<AiProject> = project_map.into_values().collect();
+        for p in &mut projects {
+            p.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        }
+        projects.sort_by(|a, b| {
+            let a_ts = a.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            b_ts.cmp(a_ts)
+        });
+        projects
+    })
+    .await
+    .unwrap_or_default()
 }

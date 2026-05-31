@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/relativeTime";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
-import { whenSessionReady, writeToSession } from "@/modules/terminal";
+import { writeToSession } from "@/modules/terminal";
 import type { TerminalTab } from "@/modules/tabs";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
@@ -24,6 +24,26 @@ type Props = {
   setActiveId: (id: number) => void;
   tabs: Tab[];
 };
+
+// Poll writeToSession every 150ms until the PTY is open and the write succeeds,
+// then send Enter. This replaces whenSessionReady which requires OSC 7 shell
+// integration (not configured by default on Windows PowerShell).
+async function writeWhenReady(
+  leafId: number,
+  command: string,
+  maxMs = 8000,
+): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    if (writeToSession(leafId, command)) {
+      // Give the shell 120ms to echo the command before sending Enter.
+      await new Promise<void>((r) => setTimeout(r, 120));
+      writeToSession(leafId, "\r");
+      return;
+    }
+    await new Promise<void>((r) => setTimeout(r, 150));
+  }
+}
 
 /** Status of Claude Code in a terminal tab */
 type LiveStatus = "working" | "waiting" | null;
@@ -108,17 +128,12 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
       );
       if (existingTab) {
         setActiveId(existingTab.id);
-        // Write the resume command to the existing tab's terminal.
         const leafId = existingTab.activeLeafId;
         const command =
           tool === "claude"
             ? `claude --resume ${session.id}`
             : `codex --resume ${session.id}`;
-        try {
-          await whenSessionReady(leafId, 3000);
-          writeToSession(leafId, command);
-          setTimeout(() => writeToSession(leafId, "\r"), 120);
-        } catch { /* terminal not ready, ignore */ }
+        void writeWhenReady(leafId, command);
         return;
       }
 
@@ -127,15 +142,15 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
       try {
         const cwd = session.cwd || undefined;
         const tabId = newTab(cwd);
+        // Switch to the new tab immediately so TerminalPane mounts and the PTY opens.
+        setActiveId(tabId);
         // useTabs.newTab always allocates tabId then leafId = tabId+1 synchronously.
         const leafId = tabId + 1;
         const command =
           tool === "claude"
             ? `claude --resume ${session.id}`
             : `codex --resume ${session.id}`;
-        await whenSessionReady(leafId, 5000);
-        writeToSession(leafId, command);
-        setTimeout(() => writeToSession(leafId, "\r"), 120);
+        await writeWhenReady(leafId, command);
       } finally {
         setOpening(null);
       }
