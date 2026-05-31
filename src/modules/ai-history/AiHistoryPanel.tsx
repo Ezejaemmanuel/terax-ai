@@ -5,18 +5,29 @@ import { writeToSession } from "@/modules/terminal";
 import type { TerminalTab } from "@/modules/tabs";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
+  Add01Icon,
   ArrowRight01Icon,
+  Copy01Icon,
+  FileEdit01Icon,
   Loading03Icon,
   SearchIcon,
   SortByDown01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   type AiProject,
   type AiSession,
   useAiHistory,
 } from "./lib/useAiHistory";
+import { useSessionTabStore } from "./lib/sessionTabStore";
+import { SessionChangesPanel } from "./SessionChangesPanel";
 
 type Props = {
   tool: "claude" | "codex";
@@ -28,21 +39,23 @@ type Props = {
 // Poll writeToSession every 150ms until the PTY is open and the write succeeds,
 // then send Enter. This replaces whenSessionReady which requires OSC 7 shell
 // integration (not configured by default on Windows PowerShell).
+// Returns true if the command was successfully written, false on timeout.
 async function writeWhenReady(
   leafId: number,
   command: string,
   maxMs = 8000,
-): Promise<void> {
+): Promise<boolean> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     if (writeToSession(leafId, command)) {
       // Give the shell 120ms to echo the command before sending Enter.
       await new Promise<void>((r) => setTimeout(r, 120));
       writeToSession(leafId, "\r");
-      return;
+      return true;
     }
     await new Promise<void>((r) => setTimeout(r, 150));
   }
+  return false;
 }
 
 /** Status of Claude Code in a terminal tab */
@@ -68,6 +81,19 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
   } = useAiHistory(tool);
 
   const [opening, setOpening] = useState<string | null>(null);
+  const [openingNewCwd, setOpeningNewCwd] = useState<string | null>(null);
+  const [viewingChanges, setViewingChanges] = useState<AiSession | null>(null);
+
+  // Module-level store survives sidebar panel switches (component unmounts).
+  const { getTabId, setMapping, clearStaleTabIds } = useSessionTabStore();
+  // Reactive subscription so the effect re-runs if mappings change independently.
+  const storeMap = useSessionTabStore((s) => s.map);
+
+  // Single batched call — one Map copy, one subscriber notification per tabs change.
+  useEffect(() => {
+    const activeTabIds = new Set(tabs.map((t) => t.id));
+    clearStaleTabIds(activeTabIds);
+  }, [tabs, storeMap, clearStaleTabIds]);
 
   // Agent sessions from the store — keyed by leafId.
   const agentSessions = useAgentStore((s: { sessions: Record<number, import("@/modules/agents/lib/types").AgentSession> }) => s.sessions);
@@ -97,6 +123,32 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     [tabs, agentSessions],
   );
 
+  const openNewSession = useCallback(
+    async (cwd: string) => {
+      if (openingNewCwd) return;
+
+      // If there's already a terminal tab at this CWD with the tool running,
+      // just switch to it rather than spawning a duplicate.
+      const { tabId: existingTabId } = liveStatusForCwd(cwd);
+      if (existingTabId != null) {
+        setActiveId(existingTabId);
+        return;
+      }
+
+      setOpeningNewCwd(cwd);
+      try {
+        const tabId = newTab(cwd);
+        setActiveId(tabId);
+        const leafId = tabId + 1;
+        const command = tool === "claude" ? "claude --auto" : "codex --auto";
+        await writeWhenReady(leafId, command);
+      } finally {
+        setOpeningNewCwd(null);
+      }
+    },
+    [openingNewCwd, newTab, setActiveId, tool, liveStatusForCwd],
+  );
+
   // Memoize status for all projects.
   const projectStatuses = useMemo(
     () =>
@@ -110,55 +162,47 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     async (session: AiSession) => {
       if (opening) return;
 
-      // If there's already a terminal tab at this CWD with Claude Code running,
-      // switch to it instead of opening a new terminal.
-      const { tabId: existingTabId } = liveStatusForCwd(session.cwd);
-      if (existingTabId != null) {
-        setActiveId(existingTabId);
+      // If we already opened a tab for this specific session, switch to it.
+      const mappedTabId = getTabId(session.id);
+      if (mappedTabId != null && tabs.some((t) => t.id === mappedTabId)) {
+        setActiveId(mappedTabId);
         return;
       }
 
-      // Also check for any terminal tab at the same CWD (even without Claude Code active).
-      const existingTab = tabs.find(
-        (t): t is TerminalTab => {
-          if (t.kind !== "terminal") return false;
-          const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/$/, "");
-          return norm(t.cwd ?? "") === norm(session.cwd);
-        },
-      );
-      if (existingTab) {
-        setActiveId(existingTab.id);
-        const leafId = existingTab.activeLeafId;
-        const command =
-          tool === "claude"
-            ? `claude --resume ${session.id}`
-            : `codex --resume ${session.id}`;
-        void writeWhenReady(leafId, command);
-        return;
-      }
-
-      // No existing tab — open a new one.
+      // No existing tab — open a new one and resume it.
       setOpening(session.id);
       try {
         const cwd = session.cwd || undefined;
         const tabId = newTab(cwd);
-        // Switch to the new tab immediately so TerminalPane mounts and the PTY opens.
         setActiveId(tabId);
-        // useTabs.newTab always allocates tabId then leafId = tabId+1 synchronously.
         const leafId = tabId + 1;
         const command =
           tool === "claude"
             ? `claude --resume ${session.id}`
             : `codex --resume ${session.id}`;
-        await writeWhenReady(leafId, command);
+        const sent = await writeWhenReady(leafId, command);
+        // Only record the mapping if the command was actually delivered.
+        // A timeout leaves the tab open (user can retry manually) but we don't
+        // lock the session to a tab that has no Claude process.
+        if (sent) setMapping(session.id, tabId);
       } finally {
         setOpening(null);
       }
     },
-    [opening, newTab, setActiveId, tabs, tool, liveStatusForCwd],
+    [opening, newTab, setActiveId, tabs, tool, getTabId, setMapping],
   );
 
   const label = tool === "claude" ? "Claude Code" : "Codex";
+
+  if (viewingChanges) {
+    return (
+      <SessionChangesPanel
+        session={viewingChanges}
+        tool={tool}
+        onBack={() => setViewingChanges(null)}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col bg-card/80 backdrop-blur [contain:layout_style]">
@@ -242,6 +286,10 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
                   onShowMore={() => toggleExpand(project.fullPath)}
                   onOpenSession={openSession}
                   openingId={opening}
+                  onNewSession={() => openNewSession(project.fullPath)}
+                  isOpeningNew={openingNewCwd === project.fullPath}
+                  onCopySessionId={(id) => navigator.clipboard.writeText(id)}
+                  onViewChanges={(session) => setViewingChanges(session)}
                 />
               );
             })}
@@ -262,6 +310,10 @@ type ProjectRowProps = {
   onShowMore: () => void;
   onOpenSession: (session: AiSession) => void;
   openingId: string | null;
+  onNewSession: () => void;
+  isOpeningNew: boolean;
+  onCopySessionId: (sessionId: string) => void;
+  onViewChanges: (session: AiSession) => void;
 };
 
 const ProjectRow = memo(function ProjectRow({
@@ -274,41 +326,71 @@ const ProjectRow = memo(function ProjectRow({
   onShowMore,
   onOpenSession,
   openingId,
+  onNewSession,
+  isOpeningNew,
+  onCopySessionId,
+  onViewChanges,
 }: ProjectRowProps) {
   return (
     <div>
       {/* Project header */}
-      <button
-        type="button"
-        onClick={onToggleCollapse}
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left hover:bg-foreground/[0.04]"
-      >
-        <HugeiconsIcon
-          icon={ArrowRight01Icon}
-          size={10}
-          strokeWidth={2.2}
-          className={cn(
-            "shrink-0 text-muted-foreground/60 transition-transform duration-100",
-            !isCollapsed && "rotate-90",
+      <div className="group/project-row flex items-center hover:bg-foreground/[0.04]">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          className="flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1.5 text-left"
+        >
+          <HugeiconsIcon
+            icon={ArrowRight01Icon}
+            size={10}
+            strokeWidth={2.2}
+            className={cn(
+              "shrink-0 text-muted-foreground/60 transition-transform duration-100",
+              !isCollapsed && "rotate-90",
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-foreground/90">
+            {project.name}
+          </span>
+          {/* Live status dot */}
+          {liveStatus === "working" && (
+            <span
+              title="Claude Code is working"
+              className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-500"
+            />
           )}
-        />
-        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-foreground/90">
-          {project.name}
-        </span>
-        {/* Live status dot */}
-        {liveStatus === "working" && (
-          <span
-            title="Claude Code is working"
-            className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-500"
-          />
-        )}
-        {liveStatus === "waiting" && (
-          <span
-            title="Claude Code is waiting for input"
-            className="size-2 shrink-0 animate-pulse rounded-full bg-amber-400"
-          />
-        )}
-      </button>
+          {liveStatus === "waiting" && (
+            <span
+              title="Claude Code is waiting for input"
+              className="size-2 shrink-0 animate-pulse rounded-full bg-amber-400"
+            />
+          )}
+        </button>
+        {/* New session button — visible on row hover */}
+        <button
+          type="button"
+          disabled={isOpeningNew}
+          onClick={onNewSession}
+          title="Start new session in auto mode"
+          className={cn(
+            "mr-1.5 flex shrink-0 items-center justify-center rounded p-0.5",
+            "opacity-0 transition-opacity duration-100 group-hover/project-row:opacity-100",
+            "text-muted-foreground hover:bg-foreground/[0.07] hover:text-foreground",
+            isOpeningNew && "cursor-not-allowed opacity-60",
+          )}
+        >
+          {isOpeningNew ? (
+            <HugeiconsIcon
+              icon={Loading03Icon}
+              size={12}
+              strokeWidth={1.75}
+              className="animate-spin"
+            />
+          ) : (
+            <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={2} />
+          )}
+        </button>
+      </div>
 
       {/* Sessions */}
       {!isCollapsed && (
@@ -320,6 +402,8 @@ const ProjectRow = memo(function ProjectRow({
               isFirst={i === 0}
               isOpening={openingId === session.id}
               onOpen={() => onOpenSession(session)}
+              onCopyId={() => onCopySessionId(session.id)}
+              onViewChanges={() => onViewChanges(session)}
             />
           ))}
 
@@ -343,6 +427,8 @@ type SessionRowProps = {
   isFirst: boolean;
   isOpening: boolean;
   onOpen: () => void;
+  onCopyId: () => void;
+  onViewChanges: () => void;
 };
 
 const SessionRow = memo(function SessionRow({
@@ -350,38 +436,70 @@ const SessionRow = memo(function SessionRow({
   isFirst,
   isOpening,
   onOpen,
+  onCopyId,
+  onViewChanges,
 }: SessionRowProps) {
   const time = relativeTime(session.updatedAt);
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      disabled={isOpening}
-      className={cn(
-        "flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors",
-        isFirst
-          ? "text-foreground hover:bg-accent/40"
-          : "text-muted-foreground hover:bg-accent/25 hover:text-foreground",
-        isOpening && "opacity-60",
-      )}
-    >
-      {isOpening && (
-        <HugeiconsIcon
-          icon={Loading03Icon}
-          size={10}
-          strokeWidth={1.75}
-          className="shrink-0 animate-spin text-muted-foreground"
-        />
-      )}
-      <span className="min-w-0 flex-1 truncate text-[11.5px]">
-        {session.title}
-      </span>
-      {time && (
-        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/55">
-          {time}
-        </span>
-      )}
-    </button>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div className="group/session-row relative">
+          <button
+            type="button"
+            onClick={onOpen}
+            disabled={isOpening}
+            className={cn(
+              "flex w-full items-center gap-2 px-4 py-1.5 pr-8 text-left transition-colors",
+              isFirst
+                ? "text-foreground hover:bg-accent/40"
+                : "text-muted-foreground hover:bg-accent/25 hover:text-foreground",
+              isOpening && "opacity-60",
+            )}
+          >
+            {isOpening && (
+              <HugeiconsIcon
+                icon={Loading03Icon}
+                size={10}
+                strokeWidth={1.75}
+                className="shrink-0 animate-spin text-muted-foreground"
+              />
+            )}
+            <span className="min-w-0 flex-1 truncate text-[11.5px]">
+              {session.title}
+            </span>
+            {time && (
+              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/55">
+                {time}
+              </span>
+            )}
+          </button>
+          {/* View changes button — appears on row hover */}
+          <button
+            type="button"
+            onClick={onViewChanges}
+            title="View changed files"
+            className={cn(
+              "absolute right-1.5 top-1/2 -translate-y-1/2",
+              "flex items-center justify-center rounded p-0.5",
+              "opacity-0 transition-opacity duration-100 group-hover/session-row:opacity-100",
+              "text-muted-foreground hover:bg-foreground/[0.07] hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={FileEdit01Icon} size={11} strokeWidth={1.75} />
+          </button>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={onViewChanges}>
+          <HugeiconsIcon icon={FileEdit01Icon} size={14} strokeWidth={1.75} />
+          View changes
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onCopyId}>
+          <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
+          Copy chat ID
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 });

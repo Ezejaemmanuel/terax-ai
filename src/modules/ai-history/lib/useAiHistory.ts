@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { relativeTime } from "@/lib/relativeTime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -7,6 +8,7 @@ export type AiSession = {
   title: string;
   updatedAt: string;
   cwd: string;
+  jsonlPath: string;
 };
 
 export type AiProject = {
@@ -15,7 +17,7 @@ export type AiProject = {
   sessions: AiSession[];
 };
 
-type RawSession = { id: string; title: string; updated_at: string; cwd: string };
+type RawSession = { id: string; title: string; updated_at: string; cwd: string; jsonl_path: string };
 type RawProject = { name: string; full_path: string; sessions: RawSession[] };
 
 function toProject(raw: RawProject): AiProject {
@@ -27,6 +29,7 @@ function toProject(raw: RawProject): AiProject {
       title: s.title,
       updatedAt: s.updated_at,
       cwd: s.cwd,
+      jsonlPath: s.jsonl_path,
     })),
   };
 }
@@ -66,6 +69,36 @@ export function useAiHistory(tool: "claude" | "codex") {
         setLoading(false);
       });
   }, [tool]);
+
+  // Silent background refresh — no loading spinner, just updates the list.
+  const refreshProjects = useCallback(() => {
+    const command = tool === "claude" ? "ai_history_claude" : "ai_history_codex";
+    invoke<RawProject[]>(command)
+      .then((raw) => setProjects(raw.map(toProject)))
+      .catch(() => {});
+  }, [tool]);
+
+  // Start the backend recursive watcher once per tool and re-fetch on changes.
+  useEffect(() => {
+    void invoke("ai_history_watch", { tool }).catch(() => {});
+
+    const win = getCurrentWebviewWindow();
+    let cancelled = false;
+    let unlistenFn: (() => void) | null = null;
+    win
+      .listen<string>("ai:history_changed", (event) => {
+        if (event.payload === tool) refreshProjects();
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlistenFn = fn;
+      });
+
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, [tool, refreshProjects]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return projects;

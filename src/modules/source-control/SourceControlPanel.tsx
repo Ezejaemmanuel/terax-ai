@@ -77,6 +77,7 @@ const ROW_HEIGHTS = {
   header: 30,
   entry: 30,
   "tree-folder": 28,
+  "section-header": 26,
 } as const;
 
 type ViewMode = "list" | "tree";
@@ -84,6 +85,7 @@ type ViewMode = "list" | "tree";
 type RowDescriptor =
   | { kind: "banner-diverged"; key: string }
   | { kind: "list-header"; key: string; count: number }
+  | { kind: "section-header"; key: string; section: "staged" | "unstaged"; count: number; collapsed: boolean }
   | { kind: "entry"; key: string; entry: SourceControlFileEntry; depth: number }
   | { kind: "tree-folder"; key: string; folderPath: string; name: string; depth: number; collapsed: boolean; count: number; checkState: CheckState };
 
@@ -160,20 +162,20 @@ function upstreamBadgeLabel(upstream: string | null | undefined): string {
   return upstream;
 }
 
-function statusAccent(code: string): string {
+function statusBadgeClass(code: string): string {
   switch (code) {
     case "A":
-      return "bg-emerald-500/85";
+      return "text-emerald-400";
     case "U":
-      return "bg-teal-500/85";
+      return "text-teal-400";
     case "M":
-      return "bg-amber-500/85";
+      return "text-amber-400";
     case "D":
-      return "bg-rose-500/85";
+      return "text-rose-400";
     case "R":
-      return "bg-sky-500/85";
+      return "text-sky-400";
     default:
-      return "bg-muted-foreground/40";
+      return "text-muted-foreground/60";
   }
 }
 
@@ -200,9 +202,10 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       const v = localStorage.getItem("terax.scm.viewMode");
       if (v === "list" || v === "tree") return v;
     } catch { /* ignore */ }
-    return "tree";
+    return "list";
   });
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [collapsedSections, setCollapsedSections] = useState<Set<"staged" | "unstaged">>(new Set());
 
   useEffect(() => {
     return () => {
@@ -314,48 +317,119 @@ export const SourceControlPanel = memo(function SourceControlPanel({
     });
   }, []);
 
+  const toggleSectionCollapsed = useCallback((section: "staged" | "unstaged") => {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) next.delete(section);
+      else next.add(section);
+      return next;
+    });
+  }, []);
+
+  const stagedDisplayEntries = useMemo<SourceControlFileEntry[]>(
+    () =>
+      scm.fileEntries
+        .filter((e) => e.staged)
+        .map((e) => ({ ...e, key: `s:${e.path}`, checkState: "checked" as CheckState, unstaged: false })),
+    [scm.fileEntries],
+  );
+
+  const unstagedDisplayEntries = useMemo<SourceControlFileEntry[]>(
+    () =>
+      scm.fileEntries
+        .filter((e) => e.unstaged)
+        .map((e) => ({ ...e, key: `u:${e.path}`, checkState: "unchecked" as CheckState, staged: false })),
+    [scm.fileEntries],
+  );
+
+  // O(1) lookup used by the tree-view folder checkState computation below.
+  const stagedPathSet = useMemo(
+    () => new Set(scm.fileEntries.filter((e) => e.staged).map((e) => e.path)),
+    [scm.fileEntries],
+  );
+
   const rows = useMemo<RowDescriptor[]>(() => {
     const result: RowDescriptor[] = [];
     if (isDiverged) {
       result.push({ kind: "banner-diverged", key: "banner-diverged" });
     }
-    if (changedCount > 0) {
+
+    const hasStagedFiles = stagedDisplayEntries.length > 0;
+    const hasUnstagedFiles = unstagedDisplayEntries.length > 0;
+
+    if (hasStagedFiles || hasUnstagedFiles) {
       result.push({ kind: "list-header", key: "list-header", count: changedCount });
-      if (viewMode === "list") {
-        for (const entry of scm.fileEntries) {
-          result.push({ kind: "entry", key: entry.key, entry, depth: 0 });
-        }
-      } else {
-        for (const node of flattenFileTree(scm.fileEntries, collapsedFolders)) {
-          if (node.kind === "folder") {
-            result.push({
-              kind: "tree-folder",
-              key: `folder:${node.path}`,
-              folderPath: node.path,
-              name: node.name,
-              depth: node.depth,
-              collapsed: collapsedFolders.has(node.path),
-              count: node.childCount,
-              checkState: scm.fileEntries
-                .filter((entry) => pathStartsWithFolder(entry.path.replace(/\\/g, "/"), node.path))
-                .every((entry) => entry.checkState === "checked")
-                ? "checked"
-                : scm.fileEntries.some(
-                      (entry) =>
-                        pathStartsWithFolder(entry.path.replace(/\\/g, "/"), node.path) &&
-                        entry.checkState !== "unchecked",
-                    )
-                  ? "indeterminate"
-                  : "unchecked",
-            });
-          } else {
-            result.push({ kind: "entry", key: node.entry.key, entry: node.entry, depth: node.depth });
+    }
+
+    if (hasStagedFiles) {
+      const stagedCollapsed = collapsedSections.has("staged");
+      result.push({ kind: "section-header", key: "section-staged", section: "staged", count: stagedDisplayEntries.length, collapsed: stagedCollapsed });
+      if (!stagedCollapsed) {
+        if (viewMode === "list") {
+          for (const entry of stagedDisplayEntries) {
+            result.push({ kind: "entry", key: entry.key, entry, depth: 0 });
+          }
+        } else {
+          for (const node of flattenFileTree(stagedDisplayEntries, collapsedFolders)) {
+            if (node.kind === "folder") {
+              result.push({
+                kind: "tree-folder",
+                key: `sfolder:${node.path}`,
+                folderPath: node.path,
+                name: node.name,
+                depth: node.depth,
+                collapsed: collapsedFolders.has(node.path),
+                count: node.childCount,
+                checkState: "checked",
+              });
+            } else {
+              result.push({ kind: "entry", key: node.entry.key, entry: node.entry, depth: node.depth });
+            }
           }
         }
       }
     }
+
+    if (hasUnstagedFiles) {
+      const unstagedCollapsed = collapsedSections.has("unstaged");
+      result.push({ kind: "section-header", key: "section-unstaged", section: "unstaged", count: unstagedDisplayEntries.length, collapsed: unstagedCollapsed });
+      if (!unstagedCollapsed) {
+        if (viewMode === "list") {
+          for (const entry of unstagedDisplayEntries) {
+            result.push({ kind: "entry", key: entry.key, entry, depth: 0 });
+          }
+        } else {
+          for (const node of flattenFileTree(unstagedDisplayEntries, collapsedFolders)) {
+            if (node.kind === "folder") {
+              result.push({
+                kind: "tree-folder",
+                key: `ufolder:${node.path}`,
+                folderPath: node.path,
+                name: node.name,
+                depth: node.depth,
+                collapsed: collapsedFolders.has(node.path),
+                count: node.childCount,
+                checkState: (() => {
+                  const under = unstagedDisplayEntries.filter((e) =>
+                    pathStartsWithFolder(e.path.replace(/\\/g, "/"), node.path),
+                  );
+                  // stagedPathSet is O(1) lookup — avoids O(n²) Array.find per entry.
+                  const stagedCount = under.filter((e) => stagedPathSet.has(e.path)).length;
+                  if (stagedCount === 0) return "unchecked" as CheckState;
+                  if (stagedCount === under.length) return "checked" as CheckState;
+                  return "indeterminate" as CheckState;
+                })(),
+              });
+            } else {
+              result.push({ kind: "entry", key: node.entry.key, entry: node.entry, depth: node.depth });
+            }
+          }
+        }
+      }
+    }
+
     return result;
-  }, [changedCount, collapsedFolders, isDiverged, scm.fileEntries, viewMode]);
+  }, [changedCount, collapsedFolders, collapsedSections, isDiverged, scm.fileEntries, stagedDisplayEntries, stagedPathSet, unstagedDisplayEntries, viewMode]);
 
   const toggleFolderStage = useCallback(
     async (folderPath: string, state: CheckState) => {
@@ -387,7 +461,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   const focusableIndices = useMemo(() => {
     const out: number[] = [];
     rows.forEach((row, index) => {
-      if (row.kind === "entry" || row.kind === "tree-folder") out.push(index);
+      if (row.kind === "entry" || row.kind === "tree-folder" || row.kind === "section-header") out.push(index);
     });
     return out;
   }, [rows]);
@@ -401,6 +475,8 @@ export const SourceControlPanel = memo(function SourceControlPanel({
           return ROW_HEIGHTS.banner;
         case "list-header":
           return ROW_HEIGHTS.header;
+        case "section-header":
+          return ROW_HEIGHTS["section-header"];
         case "tree-folder":
           return ROW_HEIGHTS["tree-folder"];
         case "entry":
@@ -477,7 +553,10 @@ export const SourceControlPanel = memo(function SourceControlPanel({
           const idx = rowKeyToIndex.get(focusedRowKey);
           if (idx === undefined) break;
           const row = rows[idx];
-          if (row?.kind === "tree-folder" && row.collapsed) {
+          if (row?.kind === "section-header" && row.collapsed) {
+            event.preventDefault();
+            toggleSectionCollapsed(row.section);
+          } else if (row?.kind === "tree-folder" && row.collapsed) {
             event.preventDefault();
             toggleFolderCollapsed(row.folderPath);
           }
@@ -488,7 +567,10 @@ export const SourceControlPanel = memo(function SourceControlPanel({
           const idx = rowKeyToIndex.get(focusedRowKey);
           if (idx === undefined) break;
           const row = rows[idx];
-          if (row?.kind === "tree-folder" && !row.collapsed) {
+          if (row?.kind === "section-header" && !row.collapsed) {
+            event.preventDefault();
+            toggleSectionCollapsed(row.section);
+          } else if (row?.kind === "tree-folder" && !row.collapsed) {
             event.preventDefault();
             toggleFolderCollapsed(row.folderPath);
           }
@@ -499,6 +581,11 @@ export const SourceControlPanel = memo(function SourceControlPanel({
             const idx = rowKeyToIndex.get(focusedRowKey);
             if (idx !== undefined) {
               const row = rows[idx];
+              if (row?.kind === "section-header") {
+                event.preventDefault();
+                toggleSectionCollapsed(row.section);
+                break;
+              }
               if (row?.kind === "tree-folder") {
                 event.preventDefault();
                 toggleFolderCollapsed(row.folderPath);
@@ -547,7 +634,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
         }
       }
     },
-    [focusedEntry, focusedRowKey, handleRefresh, moveFocus, rowKeyToIndex, rows, scm, toggleFolderCollapsed, toggleFolderStage],
+    [focusedEntry, focusedRowKey, handleRefresh, moveFocus, rowKeyToIndex, rows, scm, toggleFolderCollapsed, toggleFolderStage, toggleSectionCollapsed],
   );
 
   if (!open) return null;
@@ -902,6 +989,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                             }}
                             onToggleFolderCollapsed={toggleFolderCollapsed}
                             onToggleFolderStage={toggleFolderStage}
+                            onToggleSectionCollapsed={toggleSectionCollapsed}
+                            onStageAll={scm.stageAllEntries}
+                            onUnstageAll={scm.unstageAllEntries}
                             onSelectFile={scm.selectFile}
                             onToggleStageFile={scm.toggleStageFile}
                             onDiscardFile={scm.requestDiscardFile}
@@ -1002,6 +1092,9 @@ type RowRendererProps = {
   onToggleViewMode: () => void;
   onToggleFolderCollapsed: (folderPath: string) => void;
   onToggleFolderStage: (folderPath: string, state: CheckState) => Promise<void>;
+  onToggleSectionCollapsed: (section: "staged" | "unstaged") => void;
+  onStageAll: () => Promise<void>;
+  onUnstageAll: () => Promise<void>;
   onSelectFile: (entry: SourceControlFileEntry) => Promise<void>;
   onToggleStageFile: (entry: SourceControlFileEntry) => Promise<void>;
   onDiscardFile: (entry: SourceControlFileEntry) => void;
@@ -1014,6 +1107,8 @@ const RowRenderer = memo(function RowRenderer(props: RowRendererProps) {
       return <DivergedBanner />;
     case "list-header":
       return <ListHeader {...props} row={row} />;
+    case "section-header":
+      return <SectionHeader {...props} row={row} />;
     case "entry":
       return <EntryRow {...props} row={row} />;
     case "tree-folder":
@@ -1041,23 +1136,13 @@ function DivergedBanner() {
 }
 
 function ListHeader({
-  row,
-  actionBusy,
-  headerCheckState,
   viewMode,
-  onToggleAll,
   onToggleViewMode,
 }: RowRendererProps & {
   row: Extract<RowDescriptor, { kind: "list-header" }>;
 }) {
   return (
-    <div className="flex h-7 items-center gap-2 px-3">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
-        Changes
-      </span>
-      <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border/60 px-1 text-[9.5px] font-semibold tabular-nums text-muted-foreground">
-        {row.count}
-      </span>
+    <div className="flex h-7 items-center justify-between px-3">
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -1065,7 +1150,7 @@ function ListHeader({
             aria-label={viewMode === "list" ? "Switch to tree view" : "Switch to list view"}
             onClick={onToggleViewMode}
             className={cn(
-              "inline-flex size-5 items-center justify-center rounded transition-colors",
+              "ml-auto inline-flex size-5 items-center justify-center rounded transition-colors",
               "text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06]",
               viewMode === "tree" && "text-foreground bg-foreground/[0.06]",
             )}
@@ -1081,16 +1166,82 @@ function ListHeader({
           {viewMode === "list" ? "Tree view" : "List view"}
         </TooltipContent>
       </Tooltip>
-      <label className="ml-auto flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
-        <span>All</span>
-        <Checkbox
-          aria-label="Stage all changes"
-          checked={checkboxValue(headerCheckState)}
-          disabled={actionBusy !== null}
-          onCheckedChange={() => void onToggleAll()}
-          className="size-3.5"
-        />
-      </label>
+    </div>
+  );
+}
+
+function SectionHeader({
+  row,
+  focused,
+  actionBusy,
+  onFocusRow,
+  onToggleSectionCollapsed,
+  onStageAll,
+  onUnstageAll,
+}: RowRendererProps & {
+  row: Extract<RowDescriptor, { kind: "section-header" }>;
+}) {
+  const isStaged = row.section === "staged";
+  const label = isStaged ? "Staged Changes" : "Changes";
+  return (
+    // div instead of button so the inner stage/unstage button isn't nested inside
+    // interactive content (button-in-button is invalid HTML per spec).
+    <div
+      id={`scm-row-${row.key}`}
+      data-focused={focused || undefined}
+      role="option"
+      aria-selected={false}
+      aria-expanded={!row.collapsed}
+      tabIndex={0}
+      onMouseDown={() => onFocusRow(row.key)}
+      onClick={() => onToggleSectionCollapsed(row.section)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggleSectionCollapsed(row.section);
+        }
+      }}
+      className={cn(
+        "group flex h-[26px] w-full cursor-pointer items-center gap-1.5 px-2 text-left transition-colors duration-100",
+        focused ? "bg-accent/50" : "hover:bg-accent/20",
+      )}
+    >
+      <HugeiconsIcon
+        icon={ArrowRight01Icon}
+        size={9}
+        strokeWidth={2.5}
+        className={cn(
+          "shrink-0 text-muted-foreground/60 transition-transform duration-100",
+          !row.collapsed && "rotate-90",
+        )}
+      />
+      <span className="flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.13em] text-muted-foreground/80">
+        {label}
+      </span>
+      <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground/50">
+        {row.count}
+      </span>
+      <span className="shrink-0 flex items-center opacity-0 transition-opacity group-hover:opacity-100">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              disabled={actionBusy !== null}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                void (isStaged ? onUnstageAll() : onStageAll());
+              }}
+              className="inline-flex h-4 items-center rounded px-1 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.08] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isStaged ? "−" : "+"}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className={cn(SOURCE_CONTROL_TOOLTIP_CLASS, "text-[10.5px]")}>
+            {isStaged ? "Unstage all" : "Stage all"}
+          </TooltipContent>
+        </Tooltip>
+      </span>
     </div>
   );
 }
@@ -1191,7 +1342,7 @@ const EntryRow = memo(function EntryRow({
       onMouseDown={() => onFocusRow(row.key)}
       style={{ paddingLeft: `${8 + indent}px` }}
       className={cn(
-        "group relative flex h-[30px] items-center gap-2 rounded-md pr-2 transition-all duration-100",
+        "group flex h-[30px] items-center gap-1.5 pr-2 transition-all duration-100",
         focused
           ? "bg-accent/60"
           : isSelected
@@ -1199,23 +1350,13 @@ const EntryRow = memo(function EntryRow({
             : "hover:bg-accent/30",
       )}
     >
-      <span
-        className={cn(
-          "pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full transition-opacity",
-          statusAccent(entry.statusCode),
-          isSelected || focused
-            ? "opacity-100"
-            : "opacity-55 group-hover:opacity-95",
-        )}
-        aria-hidden
-      />
       <button
         type="button"
         onClick={() => {
           onFocusRow(row.key);
           void onSelectFile(entry);
         }}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
       >
         {iconUrl ? (
           <img src={iconUrl} alt="" className="size-4 shrink-0" />
@@ -1235,12 +1376,22 @@ const EntryRow = memo(function EntryRow({
             {fileName}
           </span>
           {pathLabel ? (
-            <span className="min-w-0 flex-1 truncate text-[10.5px] leading-tight text-muted-foreground/75">
+            <span className="min-w-0 flex-1 truncate text-[10.5px] leading-tight text-muted-foreground/60">
               {pathLabel}
             </span>
           ) : null}
         </div>
       </button>
+
+      <span
+        className={cn(
+          "shrink-0 w-3.5 text-center text-[11px] font-semibold leading-none tabular-nums",
+          statusBadgeClass(entry.statusCode),
+        )}
+        aria-hidden
+      >
+        {entry.statusCode}
+      </span>
 
       {showDiscard ? (
         <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 data-[focused=true]:opacity-100 data-[selected=true]:opacity-100">

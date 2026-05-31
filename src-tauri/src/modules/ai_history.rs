@@ -1,8 +1,17 @@
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::modules::workspace::WorkspaceRegistry;
+
+const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024; // 2 MB — matches the git module cap
 
 #[derive(Serialize, Clone)]
 pub struct AiSession {
@@ -10,6 +19,7 @@ pub struct AiSession {
     pub title: String,
     pub updated_at: String, // zero-padded unix-ms or ISO 8601; sorts lexicographically
     pub cwd: String,
+    pub jsonl_path: String, // absolute path to the session JSONL file
 }
 
 #[derive(Serialize, Clone)]
@@ -144,11 +154,13 @@ pub async fn ai_history_claude() -> Vec<AiProject> {
                     _ => continue,
                 };
                 let updated_at = file_mtime_ms_str(&s_path);
+                let jsonl_path = s_path.to_string_lossy().into_owned();
                 let session = AiSession {
                     id: session_id,
                     title,
                     updated_at,
                     cwd: full_path.clone(),
+                    jsonl_path,
                 };
                 let name = short_name(&full_path);
                 project_map
@@ -260,6 +272,100 @@ fn read_codex_cwd(jsonl_path: &Path) -> Option<String> {
     None
 }
 
+/// Holds one recursive notify watcher per tool, kept alive for the app lifetime.
+#[derive(Default)]
+pub struct AiHistoryWatchState {
+    claude: Mutex<Option<RecommendedWatcher>>,
+    codex: Mutex<Option<RecommendedWatcher>>,
+}
+
+/// Start a recursive file watcher on the tool's session directory.
+/// Idempotent — calling it a second time for the same tool is a no-op.
+/// Emits `ai:history_changed` (payload = tool string) on any write/create/delete.
+#[tauri::command]
+pub fn ai_history_watch(
+    tool: String,
+    app: AppHandle,
+    state: State<'_, AiHistoryWatchState>,
+) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or_else(|| "cannot resolve home directory".to_string())?;
+    let watch_dir = match tool.as_str() {
+        "claude" => home.join(".claude").join("projects"),
+        "codex" => home.join(".codex"),
+        other => return Err(format!("unknown tool: {other}")),
+    };
+
+    let slot = match tool.as_str() {
+        "claude" => &state.claude,
+        _ => &state.codex,
+    };
+    let mut guard = slot.lock().expect("ai history watch state poisoned");
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    // Directory may not exist yet on a fresh install — skip silently.
+    if !watch_dir.is_dir() {
+        return Ok(());
+    }
+
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        Config::default(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&watch_dir, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    let tool_str = tool.clone();
+    std::thread::Builder::new()
+        .name(format!("terax-ai-history-{tool}"))
+        .spawn(move || {
+            const DEBOUNCE: Duration = Duration::from_millis(300);
+            const MAX_WINDOW: Duration = Duration::from_millis(1500);
+            loop {
+                let first = match rx.recv() {
+                    Ok(ev) => ev,
+                    Err(_) => return,
+                };
+                let mut has_change =
+                    first.is_ok_and(|ev| !matches!(ev.kind, EventKind::Access(_)));
+
+                let deadline = Instant::now() + MAX_WINDOW;
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let timeout = DEBOUNCE.min(remaining);
+                    match rx.recv_timeout(timeout) {
+                        Ok(Ok(ev)) => {
+                            if !matches!(ev.kind, EventKind::Access(_)) {
+                                has_change = true;
+                            }
+                        }
+                        Ok(Err(_)) => {}
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                }
+
+                if has_change {
+                    let _ = app.emit("ai:history_changed", &tool_str);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    *guard = Some(watcher);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ai_history_codex() -> Vec<AiProject> {
     tokio::task::spawn_blocking(|| {
@@ -321,6 +427,7 @@ pub async fn ai_history_codex() -> Vec<AiProject> {
                 title,
                 updated_at,
                 cwd: full_path.clone(),
+                jsonl_path: String::new(), // Codex JSONL tracking not yet supported
             };
             project_map
                 .entry(full_path.clone())
@@ -345,4 +452,172 @@ pub async fn ai_history_codex() -> Vec<AiProject> {
     })
     .await
     .unwrap_or_default()
+}
+
+// ── Session file-change tracking ─────────────────────────────────────────────
+
+const GIT_TIMEOUT_SECS: u64 = 30;
+
+// Runs a git command on a separate thread and waits up to `timeout_secs`.
+// We can't kill the child on timeout, but we stop blocking the caller's thread.
+fn git_output_with_timeout(
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    use std::sync::mpsc;
+    let args: Vec<String> = args.iter().map(|&s| s.to_string()).collect();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::process::Command::new("git").args(&args).output());
+    });
+    rx.recv_timeout(Duration::from_secs(timeout_secs))
+        .map_err(|_| format!("git timed out after {timeout_secs}s"))?
+        .map_err(|e| e.to_string())
+}
+
+// Validate that a jsonl_path is within ~/.claude/projects/ to prevent
+// the frontend from pointing this command at arbitrary files.
+fn is_safe_claude_jsonl_path(path: &Path) -> bool {
+    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return false;
+    }
+    let Some(home) = dirs::home_dir() else { return false };
+    path.starts_with(home.join(".claude").join("projects"))
+}
+
+fn extract_changed_files_from_jsonl(jsonl_path: &Path) -> Vec<String> {
+    let file = match fs::File::open(jsonl_path) {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+
+    const FILE_TOOLS: &[&str] = &["Edit", "Write", "Create", "MultiEdit", "NotebookEdit"];
+    let mut files: HashSet<String> = HashSet::new();
+
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+            if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+                for item in arr {
+                    if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                        continue;
+                    }
+                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    if !FILE_TOOLS.contains(&name) {
+                        continue;
+                    }
+                    if let Some(fp) = item.pointer("/input/file_path").and_then(|f| f.as_str()) {
+                        files.insert(fp.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<String> = files.into_iter().collect();
+    result.sort();
+    result
+}
+
+/// Return the list of file paths that a Claude session touched (via Edit/Write/etc.).
+/// Accepts the absolute path to the session JSONL — no directory scan needed.
+#[tauri::command]
+pub async fn session_changed_files(jsonl_path: String) -> Vec<String> {
+    tokio::task::spawn_blocking(move || {
+        let path = Path::new(&jsonl_path);
+        if !is_safe_claude_jsonl_path(path) {
+            return vec![];
+        }
+        extract_changed_files_from_jsonl(path)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Return true if the given directory is inside a git repository.
+#[tauri::command]
+pub async fn session_check_git(
+    cwd: String,
+    registry: State<'_, WorkspaceRegistry>,
+) -> bool {
+    let _ = registry.authorize(&cwd);
+    tokio::task::spawn_blocking(move || {
+        git_output_with_timeout(&["-C", &cwd, "rev-parse", "--git-dir"], GIT_TIMEOUT_SECS)
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Run `git init` in the given directory.
+#[tauri::command]
+pub async fn session_git_init(
+    cwd: String,
+    registry: State<'_, WorkspaceRegistry>,
+) -> Result<(), String> {
+    let _ = registry.authorize(&cwd);
+    tokio::task::spawn_blocking(move || {
+        let out = git_output_with_timeout(&["-C", &cwd, "init", "--"], GIT_TIMEOUT_SECS)?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Return `git diff HEAD` for one file (capped at 2 MB), or an all-additions
+/// diff for new untracked files.
+#[tauri::command]
+pub async fn session_file_diff(
+    cwd: String,
+    file_path: String,
+    registry: State<'_, WorkspaceRegistry>,
+) -> Result<String, String> {
+    let _ = registry.authorize(&cwd);
+    tokio::task::spawn_blocking(move || {
+        let out = git_output_with_timeout(
+            &["-C", &cwd, "diff", "HEAD", "--", &file_path],
+            GIT_TIMEOUT_SECS,
+        )?;
+
+        if !out.stdout.is_empty() {
+            let truncated = out.stdout.len() > MAX_DIFF_BYTES;
+            let slice = &out.stdout[..out.stdout.len().min(MAX_DIFF_BYTES)];
+            let mut diff = String::from_utf8_lossy(slice).into_owned();
+            if truncated {
+                diff.push_str("\n\\ Diff truncated (> 2 MB)\n");
+            }
+            return Ok(diff);
+        }
+
+        let is_untracked = git_output_with_timeout(
+            &["-C", &cwd, "ls-files", "--others", "--exclude-standard", "--", &file_path],
+            GIT_TIMEOUT_SECS,
+        )
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+
+        if is_untracked {
+            let abs_path = if Path::new(&file_path).is_absolute() {
+                PathBuf::from(&file_path)
+            } else {
+                PathBuf::from(&cwd).join(&file_path)
+            };
+            let content = fs::read_to_string(&abs_path).unwrap_or_default();
+            let added: String = content.lines().map(|l| format!("+{l}\n")).collect();
+            return Ok(format!(
+                "--- /dev/null\n+++ b/{file_path}\n@@ -0,0 +1 @@\n{added}"
+            ));
+        }
+
+        Ok(String::new())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

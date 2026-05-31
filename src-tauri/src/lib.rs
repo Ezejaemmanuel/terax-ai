@@ -113,6 +113,7 @@ pub fn run() {
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
+        .manage(ai_history::AiHistoryWatchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
             workspace::bootstrap_registry(&registry);
@@ -187,6 +188,11 @@ pub fn run() {
             net::ai_http_stream,
             ai_history::ai_history_claude,
             ai_history::ai_history_codex,
+            ai_history::ai_history_watch,
+            ai_history::session_changed_files,
+            ai_history::session_check_git,
+            ai_history::session_git_init,
+            ai_history::session_file_diff,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

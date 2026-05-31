@@ -69,6 +69,7 @@ export type BuildModelOptions = {
   openaiCompatibleBaseURL?: string;
 };
 
+const MODEL_CACHE_CAP = 10;
 const modelCache = new Map<string, LanguageModel>();
 
 export async function buildLanguageModel(
@@ -208,7 +209,11 @@ export async function buildLanguageModel(
       throw new Error(`Unsupported provider: ${_exhaustive as ProviderId}`);
     }
   }
+  if (modelCache.has(cacheKey)) modelCache.delete(cacheKey);
   modelCache.set(cacheKey, built);
+  if (modelCache.size > MODEL_CACHE_CAP) {
+    modelCache.delete(modelCache.keys().next().value!);
+  }
   return built;
 }
 
