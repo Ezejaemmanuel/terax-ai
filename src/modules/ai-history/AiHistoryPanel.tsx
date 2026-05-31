@@ -8,7 +8,7 @@ import {
   Add01Icon,
   ArrowRight01Icon,
   Copy01Icon,
-  FileEdit01Icon,
+  FileEditIcon,
   Loading03Icon,
   SearchIcon,
   SortByDown01Icon,
@@ -486,13 +486,13 @@ const SessionRow = memo(function SessionRow({
               "text-muted-foreground hover:bg-foreground/[0.07] hover:text-foreground",
             )}
           >
-            <HugeiconsIcon icon={FileEdit01Icon} size={11} strokeWidth={1.75} />
+            <HugeiconsIcon icon={FileEditIcon} size={11} strokeWidth={1.75} />
           </button>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onClick={onViewChanges}>
-          <HugeiconsIcon icon={FileEdit01Icon} size={14} strokeWidth={1.75} />
+          <HugeiconsIcon icon={FileEditIcon} size={14} strokeWidth={1.75} />
           View changes
         </ContextMenuItem>
         <ContextMenuItem onClick={onCopyId}>

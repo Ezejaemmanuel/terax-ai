@@ -17,7 +17,7 @@ import {
 export const POOL_MAX_SIZE = 5;
 const FIT_DEBOUNCE_MS = 8;
 const PTY_RESIZE_DEBOUNCE_MS = 256;
-const SNAPSHOT_SCROLLBACK_CAP = 1_000;
+const SNAPSHOT_SCROLLBACK_CAP = 5_000;
 
 export type SlotAdapter = {
   resolveLeaf(leafId: number): LeafBridge | null;
