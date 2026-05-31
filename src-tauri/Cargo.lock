@@ -5332,8 +5332,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "terax"
-version = "0.7.11-jatique-7"
+0.7.11-jatique-8"
 dependencies = [
  "bytes",
  "dirs 5.0.1",
@@ -7166,3 +7165,4 @@ dependencies = [
  "syn 2.0.117",
  "winnow 0.7.15",
 ]
+
