@@ -71,10 +71,8 @@ fn read_claude_session_info(jsonl_path: &Path) -> (Option<String>, Option<String
         };
 
         // Extract title from ai-title record (usually the very first line).
-        if title.is_none() {
-            if v.get("type").and_then(|t| t.as_str()) == Some("ai-title") {
-                title = v.get("aiTitle").and_then(|t| t.as_str()).map(|s| s.to_string());
-            }
+        if title.is_none() && v.get("type").and_then(|t| t.as_str()) == Some("ai-title") {
+            title = v.get("aiTitle").and_then(|t| t.as_str()).map(|s| s.to_string());
         }
 
         // The cwd field is present on every user/assistant/attachment record.
@@ -87,15 +85,13 @@ fn read_claude_session_info(jsonl_path: &Path) -> (Option<String>, Option<String
         }
 
         // Fallback title from first user message text.
-        if title.is_none() {
-            if v.get("type").and_then(|t| t.as_str()) == Some("user") {
-                if let Some(text) = v
-                    .pointer("/message/content/0/text")
-                    .and_then(|t| t.as_str())
-                {
-                    let truncated: String = text.chars().take(60).collect();
-                    title = Some(truncated);
-                }
+        if title.is_none() && v.get("type").and_then(|t| t.as_str()) == Some("user") {
+            if let Some(text) = v
+                .pointer("/message/content/0/text")
+                .and_then(|t| t.as_str())
+            {
+                let truncated: String = text.chars().take(60).collect();
+                title = Some(truncated);
             }
         }
 
