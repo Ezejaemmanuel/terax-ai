@@ -26,7 +26,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, { status: string }> }) => s.sessions,
   );
-  const { tabTitles } = useSessionTabStore();
+  const tabTitles = useSessionTabStore((s) => s.tabTitles);
 
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.kind === "terminal");
 

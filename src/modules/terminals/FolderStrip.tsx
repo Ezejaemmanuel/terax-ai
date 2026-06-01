@@ -41,7 +41,7 @@ export const FolderStrip = memo(function FolderStrip({
   onNewSession,
 }: Props) {
   const { folders, pinFolder, removeFolder } = useActiveFolderStore();
-  const { map: sessionTabMap } = useSessionTabStore((s) => ({ map: s.map }));
+  const sessionTabMap = useSessionTabStore((s) => s.map);
   const [pickerFolder, setPickerFolder] = useState<ActiveFolder | null>(null);
   // Load once at FolderStrip level so FolderSessionPicker never re-fetches on each open.
   const { projects, loading: projectsLoading } = useAiHistory("claude");
