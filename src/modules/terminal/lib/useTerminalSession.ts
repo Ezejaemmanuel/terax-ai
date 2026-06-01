@@ -370,7 +370,25 @@ function attachSession(
       })
       .catch((e) => {
         s.ptyOpening = false;
-        console.error("[terax] openPty failed:", e);
+        if (s.initialCwd) {
+          // The stored cwd (e.g. from a restored history session) is no longer
+          // accessible. Retry without it so the backend falls back to home dir.
+          console.warn("[terax] openPty failed for cwd, retrying without cwd:", e);
+          s.ptyOpening = true;
+          openPtyForSession(leafId, s, undefined)
+            .then((pty) => {
+              s.ptyOpening = false;
+              if (s.disposed) { pty.close(); return; }
+              s.pty = pty;
+              if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
+            })
+            .catch((e2) => {
+              s.ptyOpening = false;
+              console.error("[terax] openPty retry failed:", e2);
+            });
+        } else {
+          console.error("[terax] openPty failed:", e);
+        }
       });
   }
 }

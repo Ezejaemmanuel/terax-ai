@@ -94,8 +94,11 @@ pub fn authorize_spawn_cwd(
     Ok(Some(canonical))
 }
 
-// User-initiated terminal spawn: canonicalize, require a real dir, and register
-// it as a root instead of rejecting paths outside existing roots.
+// User-initiated terminal spawn: canonicalize, register as a root, and return
+// the canonical path.  If the path no longer exists or isn't a directory (e.g.
+// a stale cwd from a restored AI-history session) we return Ok(None) so that
+// shell_init::apply_common falls back to the launch snapshot / home dir instead
+// of failing the entire pty_open and leaving the terminal blank.
 pub fn authorize_user_spawn_cwd(
     registry: &WorkspaceRegistry,
     cwd: Option<&str>,
@@ -105,10 +108,19 @@ pub fn authorize_user_spawn_cwd(
         return Ok(None);
     };
     let resolved = resolve_path(cwd, workspace);
-    let canonical =
-        std::fs::canonicalize(&resolved).map_err(|e| format!("cwd not accessible: {e}"))?;
+    let canonical = match std::fs::canonicalize(&resolved) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("pty cwd not accessible, falling back to home: {e}");
+            return Ok(None);
+        }
+    };
     if !canonical.is_dir() {
-        return Err(format!("cwd is not a directory: {}", canonical.display()));
+        log::warn!(
+            "pty cwd is not a directory: {}, falling back to home",
+            canonical.display()
+        );
+        return Ok(None);
     }
     registry.authorize(&canonical).map_err(|e| e.to_string())?;
     Ok(Some(canonical))
@@ -724,14 +736,17 @@ mod auth_tests {
     }
 
     #[test]
-    fn authorize_user_spawn_cwd_rejects_missing_path() {
+    fn authorize_user_spawn_cwd_falls_back_on_missing_path() {
         let mut missing = env::temp_dir();
         missing.push(format!("terax-user-missing-{}", std::process::id()));
         let reg = WorkspaceRegistry::default();
         let s = missing.to_string_lossy().into_owned();
-        let err = authorize_user_spawn_cwd(&reg, Some(&s), &WorkspaceEnv::Local)
-            .expect_err("missing path must fail");
-        assert!(err.contains("cwd not accessible"), "got: {err}");
+        // A non-existent cwd must NOT fail pty_open — it returns Ok(None) so
+        // shell_init falls back to the home directory instead of leaving the
+        // terminal blank.
+        let result = authorize_user_spawn_cwd(&reg, Some(&s), &WorkspaceEnv::Local)
+            .expect("missing cwd should fall back, not fail");
+        assert!(result.is_none(), "expected None fallback, got: {result:?}");
     }
 
     #[test]
