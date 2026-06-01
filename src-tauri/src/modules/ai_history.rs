@@ -541,15 +541,15 @@ pub async fn session_changed_files(jsonl_path: String) -> Vec<String> {
 pub async fn session_check_git(
     cwd: String,
     registry: State<'_, WorkspaceRegistry>,
-) -> bool {
+) -> Result<bool, String> {
     let _ = registry.authorize(&cwd);
-    tokio::task::spawn_blocking(move || {
+    Ok(tokio::task::spawn_blocking(move || {
         git_output_with_timeout(&["-C", &cwd, "rev-parse", "--git-dir"], GIT_TIMEOUT_SECS)
             .map(|o| o.status.success())
             .unwrap_or(false)
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(false))
 }
 
 /// Run `git init` in the given directory.
