@@ -80,7 +80,13 @@ function buildRows(
   const walk = (parent: string, depth: number) => {
     const node = tree.nodes[parent];
     if (!node || node.status !== "loaded") return;
-    for (const entry of node.entries) {
+    const sorted = [...node.entries].sort((a, b) => {
+      const aDir = a.kind === "dir" ? 0 : 1;
+      const bDir = b.kind === "dir" ? 0 : 1;
+      if (aDir !== bDir) return aDir - bDir;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+    for (const entry of sorted) {
       const path = tree.joinPath(parent, entry.name);
       const isDir = entry.kind === "dir";
       const expanded = isDir && tree.expanded.has(path);
