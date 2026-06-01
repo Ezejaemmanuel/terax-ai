@@ -105,7 +105,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(tauri_plugin_log::log::LevelFilter::Info)
+                .level(tauri_plugin_log::log::LevelFilter::Debug)
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("terax".into()),
+                    },
+                ))
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
@@ -193,7 +198,13 @@ pub fn run() {
             ai_history::session_check_git,
             ai_history::session_git_init,
             ai_history::session_file_diff,
+            open_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
 }

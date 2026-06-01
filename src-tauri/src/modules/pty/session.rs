@@ -106,6 +106,7 @@ pub fn spawn(
 ) -> Result<(Arc<Session>, PtySize), String> {
     #[cfg(windows)]
     let _spawn_guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap();
+    log::debug!("pty spawn id={id}: lock acquired, opening pty {cols}x{rows}");
 
     let pty_system = native_pty_system();
     let size = PtySize {
@@ -114,10 +115,19 @@ pub fn spawn(
         pixel_width: 0,
         pixel_height: 0,
     };
-    let pair = pty_system.openpty(size).map_err(|e| e.to_string())?;
+    let pair = pty_system.openpty(size).map_err(|e| {
+        log::error!("pty spawn id={id}: openpty failed: {e}");
+        e.to_string()
+    })?;
+    log::debug!("pty spawn id={id}: openpty ok");
 
     let cmd = shell_init::build_command(cwd, workspace)?;
-    let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    log::debug!("pty spawn id={id}: spawning shell");
+    let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
+        log::error!("pty spawn id={id}: spawn_command failed: {e}");
+        e.to_string()
+    })?;
+    log::info!("pty spawn id={id}: shell process started pid={:?}", child.process_id());
     drop(pair.slave);
 
     // Kill the child if any of the pipe setup below fails so the spawned shell

@@ -180,6 +180,7 @@ configureRendererPool({
 function ensureSession(leafId: number, initialCwd?: string): Session {
   const existing = sessions.get(leafId);
   if (existing) return existing;
+  console.debug(`[terax] ensureSession leaf=${leafId} cwd=${initialCwd ?? "(none)"}`);
 
   const session: Session = {
     pty: null,
@@ -215,8 +216,10 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
   session.ptyOpening = true;
   openPtyForSession(leafId, session, initialCwd)
     .then((pty) => {
+      console.debug(`[terax] PTY opened leaf=${leafId} id=${pty.id}`);
       session.ptyOpening = false;
       if (session.disposed) {
+        console.debug(`[terax] PTY opened but session disposed leaf=${leafId}, closing`);
         pty.close();
         return;
       }
@@ -265,7 +268,11 @@ async function openPtyForSession(
 }
 
 function bindLeafToSlot(leafId: number, s: Session): void {
-  if (!s.container) return;
+  if (!s.container) {
+    console.debug(`[terax] bindLeafToSlot leaf=${leafId} skipped: no container`);
+    return;
+  }
+  console.debug(`[terax] bindLeafToSlot leaf=${leafId} hasSlot=${s.hasSlot} ptyReady=${!!s.pty}`);
   const altScreen = s.altScreenAtRelease;
   s.altScreenAtRelease = false;
   acquireSlot({

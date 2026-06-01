@@ -7,6 +7,13 @@ import "./styles/globals.css";
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
+// Ctrl+Shift+I opens DevTools for diagnostics (production build).
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === "I") {
+    invoke("open_devtools").catch(() => {});
+  }
+});
 import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";

@@ -328,6 +328,7 @@ mod windows {
         if is_powershell {
             match prepare_ps_profile() {
                 Ok(profile) => {
+                    log::info!("powershell profile: {}", profile.display());
                     cmd.arg("-NoLogo");
                     cmd.arg("-NoExit");
                     cmd.arg("-ExecutionPolicy");
