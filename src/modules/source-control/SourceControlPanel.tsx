@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
+import { fileIconUrl, folderIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
   AiContentGenerator02Icon,
   Alert02Icon,
@@ -1282,12 +1282,7 @@ function TreeFolderRow({
           !row.collapsed && "rotate-90",
         )}
       />
-      <HugeiconsIcon
-        icon={FolderTreeIcon}
-        size={13}
-        strokeWidth={1.75}
-        className="shrink-0 text-muted-foreground/80"
-      />
+      <img src={folderIconUrl(row.name, !row.collapsed)} alt="" className="size-4 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-foreground/90">
         {row.name}
       </span>

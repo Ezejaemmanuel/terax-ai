@@ -1,32 +1,39 @@
 import { create } from "zustand";
 
 type SessionTabState = {
-  map: Map<string, number>; // sessionId → tabId (runtime only, not persisted)
-  setMapping: (sessionId: string, tabId: number) => void;
+  map: Map<string, number>;        // sessionId → tabId
+  tabTitles: Map<number, string>;  // tabId → session title (for terminal list display)
+  setMapping: (sessionId: string, tabId: number, sessionTitle: string) => void;
   clearByTabId: (tabId: number) => void;
   clearStaleTabIds: (activeTabIds: Set<number>) => void;
   getTabId: (sessionId: string) => number | undefined;
+  getSessionTitle: (tabId: number) => string | undefined;
 };
 
 // Module-level singleton — survives component unmounts (e.g. sidebar panel switches).
 // tabIds are runtime values that reset on every app launch, so no disk persistence.
 export const useSessionTabStore = create<SessionTabState>((set, get) => ({
   map: new Map(),
+  tabTitles: new Map(),
 
-  setMapping: (sessionId, tabId) =>
+  setMapping: (sessionId, tabId, sessionTitle) =>
     set((s) => {
-      const next = new Map(s.map);
-      next.set(sessionId, tabId);
-      return { map: next };
+      const nextMap = new Map(s.map);
+      nextMap.set(sessionId, tabId);
+      const nextTitles = new Map(s.tabTitles);
+      nextTitles.set(tabId, sessionTitle);
+      return { map: nextMap, tabTitles: nextTitles };
     }),
 
   clearByTabId: (tabId) =>
     set((s) => {
-      const next = new Map(s.map);
-      for (const [sid, tid] of next) {
-        if (tid === tabId) next.delete(sid);
+      const nextMap = new Map(s.map);
+      for (const [sid, tid] of nextMap) {
+        if (tid === tabId) nextMap.delete(sid);
       }
-      return { map: next };
+      const nextTitles = new Map(s.tabTitles);
+      nextTitles.delete(tabId);
+      return { map: nextMap, tabTitles: nextTitles };
     }),
 
   // Removes all entries whose tabId is NOT in activeTabIds in a single set()
@@ -34,15 +41,18 @@ export const useSessionTabStore = create<SessionTabState>((set, get) => ({
   clearStaleTabIds: (activeTabIds) =>
     set((s) => {
       let changed = false;
-      const next = new Map(s.map);
-      for (const [sid, tid] of next) {
+      const nextMap = new Map(s.map);
+      const nextTitles = new Map(s.tabTitles);
+      for (const [sid, tid] of nextMap) {
         if (!activeTabIds.has(tid)) {
-          next.delete(sid);
+          nextMap.delete(sid);
+          nextTitles.delete(tid);
           changed = true;
         }
       }
-      return changed ? { map: next } : s;
+      return changed ? { map: nextMap, tabTitles: nextTitles } : s;
     }),
 
   getTabId: (sessionId) => get().map.get(sessionId),
+  getSessionTitle: (tabId) => get().tabTitles.get(tabId),
 }));

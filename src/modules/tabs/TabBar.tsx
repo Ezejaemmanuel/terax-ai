@@ -426,7 +426,7 @@ function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
-  if (tab.kind === "ai-diff") {
+  if (tab.kind === "ai-diff" || tab.kind === "ai-session-diff") {
     return (
       <HugeiconsIcon
         icon={GitCompareIcon}
@@ -481,6 +481,7 @@ function labelFor(t: Tab): string {
   if (t.kind === "preview") return t.title;
   if (t.kind === "markdown") return t.title;
   if (t.kind === "ai-diff") return t.title;
+  if (t.kind === "ai-session-diff") return t.title;
   if (t.kind === "git-diff") return t.title;
   if (t.kind === "git-history") return t.title;
   if (t.kind === "git-commit-file") return t.title;

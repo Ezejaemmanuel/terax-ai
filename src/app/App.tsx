@@ -72,7 +72,11 @@ import {
   type ShortcutHandlers,
   type ShortcutId,
 } from "@/modules/shortcuts";
-import { AiHistoryPanel } from "@/modules/ai-history";
+import { AiHistoryPanel, AiSessionDiffPane } from "@/modules/ai-history";
+import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
+import { useActiveFolderStore } from "@/modules/terminals/activeFolderStore";
+import { TerminalListPanel } from "@/modules/terminals/TerminalListPanel";
+import { FolderStrip } from "@/modules/terminals/FolderStrip";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import {
   SourceControlPanel,
@@ -195,6 +199,7 @@ export default function App() {
     newMarkdownTab,
     openAiDiffTab,
     closeAiDiffTab,
+    openAiSessionDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
@@ -214,6 +219,12 @@ export default function App() {
   // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+
+  // Stores used by FolderStrip session callbacks.
+  const { setMapping: setSessionMapping } = useSessionTabStore();
+  const { addFolder } = useActiveFolderStore();
+  // Prevents double-click from spawning duplicate terminals via FolderStrip.
+  const openingFromFolderRef = useRef(false);
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -490,6 +501,7 @@ export default function App() {
   const isGitDiffTab =
     activeTab?.kind === "git-diff" || activeTab?.kind === "git-commit-file";
   const isGitHistoryTab = activeTab?.kind === "git-history";
+  const isAiSessionDiffTab = activeTab?.kind === "ai-session-diff";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -1435,6 +1447,15 @@ export default function App() {
           onSearchHandle={setGitHistoryHandle}
         />
       </div>
+      {isAiSessionDiffTab && activeTab?.kind === "ai-session-diff" && (
+        <div className="absolute inset-0">
+          <AiSessionDiffPane
+            tab={activeTab}
+            onClose={() => closeTab(activeTab.id)}
+            onOpenFileDiff={openGitDiffTab}
+          />
+        </div>
+      )}
     </div>
   );
 
@@ -1467,6 +1488,71 @@ export default function App() {
             onOpenSettings={() => void openSettingsWindow()}
             searchTarget={searchTarget}
             searchRef={searchInlineRef}
+          />
+
+          <FolderStrip
+            tabs={tabs}
+            activeId={activeId}
+            onSetActiveId={setActiveId}
+            onOpenSession={(session) => {
+              if (openingFromFolderRef.current) return;
+              openingFromFolderRef.current = true;
+              void (async () => {
+                try {
+                  const tabId = newTab(session.cwd || undefined);
+                  setActiveId(tabId);
+                  const leafId = tabId + 1;
+                  const cmd = `claude --resume ${session.id}`;
+                  const deadline = Date.now() + 8000;
+                  let sent = false;
+                  while (Date.now() < deadline) {
+                    if (writeToSession(leafId, cmd)) {
+                      await new Promise<void>((r) => setTimeout(r, 120));
+                      writeToSession(leafId, "\r");
+                      sent = true;
+                      break;
+                    }
+                    await new Promise<void>((r) => setTimeout(r, 150));
+                  }
+                  if (sent) {
+                    setSessionMapping(session.id, tabId, session.title);
+                    addFolder(
+                      session.cwd,
+                      session.cwd.split(/[\\/]/).pop() ?? session.cwd,
+                    );
+                  }
+                } catch (err) {
+                  console.error("[FolderStrip] Failed to resume session:", err);
+                } finally {
+                  openingFromFolderRef.current = false;
+                }
+              })();
+            }}
+            onNewSession={(cwd) => {
+              if (openingFromFolderRef.current) return;
+              openingFromFolderRef.current = true;
+              void (async () => {
+                try {
+                  const tabId = newTab(cwd);
+                  setActiveId(tabId);
+                  const leafId = tabId + 1;
+                  const deadline = Date.now() + 8000;
+                  while (Date.now() < deadline) {
+                    if (writeToSession(leafId, "claude --permission-mode auto")) {
+                      await new Promise<void>((r) => setTimeout(r, 120));
+                      writeToSession(leafId, "\r");
+                      break;
+                    }
+                    await new Promise<void>((r) => setTimeout(r, 150));
+                  }
+                  addFolder(cwd, cwd.split(/[\\/]/).pop() ?? cwd);
+                } catch (err) {
+                  console.error("[FolderStrip] Failed to open new session:", err);
+                } finally {
+                  openingFromFolderRef.current = false;
+                }
+              })();
+            }}
           />
 
           <main className="zoom-content flex min-h-0 flex-1 flex-col">
@@ -1512,6 +1598,14 @@ export default function App() {
                         newTab={newTab}
                         setActiveId={setActiveId}
                         tabs={tabs}
+                        onViewChanges={(session) =>
+                          openAiSessionDiffTab({
+                            sessionId: session.id,
+                            jsonlPath: session.jsonlPath,
+                            cwd: session.cwd,
+                            sessionTitle: session.title,
+                          })
+                        }
                       />
                     ) : sidebarView === "codex-history" ? (
                       <AiHistoryPanel
@@ -1519,6 +1613,14 @@ export default function App() {
                         newTab={newTab}
                         setActiveId={setActiveId}
                         tabs={tabs}
+                        onViewChanges={(session) =>
+                          openAiSessionDiffTab({
+                            sessionId: session.id,
+                            jsonlPath: session.jsonlPath,
+                            cwd: session.cwd,
+                            sessionTitle: session.title,
+                          })
+                        }
                       />
                     ) : null}
                   </div>
@@ -1530,7 +1632,7 @@ export default function App() {
                 </div>
               </ResizablePanel>
               <ResizableHandle withHandle />
-              <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
+              <ResizablePanel id="workspace" defaultSize="72%" minSize="30%">
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="relative min-h-0 flex-1">
                     {workspaceSurface}
@@ -1558,6 +1660,19 @@ export default function App() {
                     </motion.div>
                   ) : null}
                 </div>
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel
+                id="terminal-list"
+                defaultSize="180px"
+                minSize="120px"
+                maxSize="300px"
+              >
+                <TerminalListPanel
+                  tabs={tabs}
+                  activeId={activeId}
+                  onSelect={setActiveId}
+                />
               </ResizablePanel>
             </ResizablePanelGroup>
           </main>

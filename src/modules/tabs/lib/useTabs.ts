@@ -116,6 +116,17 @@ export type GitCommitFileDiffTab = {
   color?: string;
 };
 
+export type AiSessionDiffTab = {
+  id: number;
+  kind: "ai-session-diff";
+  title: string;
+  sessionId: string;
+  jsonlPath: string;
+  cwd: string;
+  pinned?: boolean;
+  color?: string;
+};
+
 export type Tab =
   | TerminalTab
   | EditorTab
@@ -124,7 +135,8 @@ export type Tab =
   | AiDiffTab
   | GitDiffTab
   | GitHistoryTab
-  | GitCommitFileDiffTab;
+  | GitCommitFileDiffTab
+  | AiSessionDiffTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -863,6 +875,34 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     });
   }, []);
 
+  const openAiSessionDiffTab = useCallback(
+    (input: { sessionId: string; jsonlPath: string; cwd: string; sessionTitle: string }) => {
+      const curr = tabsRef.current;
+      const existing = curr.find(
+        (t) => t.kind === "ai-session-diff" && t.sessionId === input.sessionId,
+      );
+      if (existing) {
+        setActiveId(existing.id);
+        return existing.id;
+      }
+      const id = nextIdRef.current++;
+      const tab: AiSessionDiffTab = {
+        id,
+        kind: "ai-session-diff",
+        title: `Changes · ${input.sessionTitle}`,
+        sessionId: input.sessionId,
+        jsonlPath: input.jsonlPath,
+        cwd: input.cwd,
+      };
+      const nextTabs = [...curr, tab];
+      tabsRef.current = nextTabs;
+      setTabs(nextTabs);
+      setActiveId(id);
+      return id;
+    },
+    [],
+  );
+
   return {
     tabs,
     activeId,
@@ -884,6 +924,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     openCommitFileDiffTab,
     setAiDiffStatus,
     closeAiDiffTab,
+    openAiSessionDiffTab,
     closeTab,
     updateTab,
     selectByIndex,

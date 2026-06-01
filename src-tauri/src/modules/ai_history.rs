@@ -571,18 +571,22 @@ pub async fn session_git_init(
     .map_err(|e| e.to_string())?
 }
 
-/// Return `git diff HEAD` for one file (capped at 2 MB), or an all-additions
-/// diff for new untracked files.
+/// Return `git diff <base_ref> -- <file>` (capped at 2 MB).
+/// `base_ref` defaults to "HEAD" when empty. Pass "main" or "origin/main"
+/// to show all changes on the current branch vs that ref.
+/// For new untracked files, returns an all-additions diff.
 #[tauri::command]
 pub async fn session_file_diff(
     cwd: String,
     file_path: String,
+    base_ref: Option<String>,
     registry: State<'_, WorkspaceRegistry>,
 ) -> Result<String, String> {
     let _ = registry.authorize(&cwd);
     tokio::task::spawn_blocking(move || {
+        let base = base_ref.as_deref().filter(|s| !s.is_empty()).unwrap_or("HEAD");
         let out = git_output_with_timeout(
-            &["-C", &cwd, "diff", "HEAD", "--", &file_path],
+            &["-C", &cwd, "diff", base, "--", &file_path],
             GIT_TIMEOUT_SECS,
         )?;
 

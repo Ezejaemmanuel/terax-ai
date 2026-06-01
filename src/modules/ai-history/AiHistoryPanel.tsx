@@ -27,13 +27,14 @@ import {
   useAiHistory,
 } from "./lib/useAiHistory";
 import { useSessionTabStore } from "./lib/sessionTabStore";
-import { SessionChangesPanel } from "./SessionChangesPanel";
+import { useActiveFolderStore } from "@/modules/terminals/activeFolderStore";
 
 type Props = {
   tool: "claude" | "codex";
   newTab: (cwd?: string) => number;
   setActiveId: (id: number) => void;
   tabs: Tab[];
+  onViewChanges?: (session: AiSession) => void;
 };
 
 // Poll writeToSession every 150ms until the PTY is open and the write succeeds,
@@ -66,6 +67,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
   newTab,
   setActiveId,
   tabs,
+  onViewChanges,
 }: Props) {
   const {
     projects,
@@ -82,10 +84,10 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
 
   const [opening, setOpening] = useState<string | null>(null);
   const [openingNewCwd, setOpeningNewCwd] = useState<string | null>(null);
-  const [viewingChanges, setViewingChanges] = useState<AiSession | null>(null);
 
   // Module-level store survives sidebar panel switches (component unmounts).
   const { getTabId, setMapping, clearStaleTabIds } = useSessionTabStore();
+  const addFolder = useActiveFolderStore((s) => s.addFolder);
   // Reactive subscription so the effect re-runs if mappings change independently.
   const storeMap = useSessionTabStore((s) => s.map);
 
@@ -140,13 +142,14 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         const tabId = newTab(cwd);
         setActiveId(tabId);
         const leafId = tabId + 1;
-        const command = tool === "claude" ? "claude --auto" : "codex --auto";
+        const command = tool === "claude" ? "claude --permission-mode auto" : "codex";
         await writeWhenReady(leafId, command);
+        addFolder(cwd, projects.find((p) => p.fullPath === cwd)?.name ?? cwd.split(/[\\/]/).pop() ?? cwd);
       } finally {
         setOpeningNewCwd(null);
       }
     },
-    [openingNewCwd, newTab, setActiveId, tool, liveStatusForCwd],
+    [openingNewCwd, newTab, setActiveId, tool, liveStatusForCwd, addFolder, projects],
   );
 
   // Memoize status for all projects.
@@ -184,25 +187,18 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         // Only record the mapping if the command was actually delivered.
         // A timeout leaves the tab open (user can retry manually) but we don't
         // lock the session to a tab that has no Claude process.
-        if (sent) setMapping(session.id, tabId);
+        if (sent) {
+          setMapping(session.id, tabId, session.title);
+          addFolder(session.cwd, projects.find((p) => p.fullPath === session.cwd)?.name ?? session.cwd.split(/[\\/]/).pop() ?? session.cwd);
+        }
       } finally {
         setOpening(null);
       }
     },
-    [opening, newTab, setActiveId, tabs, tool, getTabId, setMapping],
+    [opening, newTab, setActiveId, tabs, tool, getTabId, setMapping, addFolder, projects],
   );
 
   const label = tool === "claude" ? "Claude Code" : "Codex";
-
-  if (viewingChanges) {
-    return (
-      <SessionChangesPanel
-        session={viewingChanges}
-        tool={tool}
-        onBack={() => setViewingChanges(null)}
-      />
-    );
-  }
 
   return (
     <div className="flex h-full flex-col bg-card/80 backdrop-blur [contain:layout_style]">
@@ -289,7 +285,10 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
                   onNewSession={() => openNewSession(project.fullPath)}
                   isOpeningNew={openingNewCwd === project.fullPath}
                   onCopySessionId={(id) => navigator.clipboard.writeText(id)}
-                  onViewChanges={(session) => setViewingChanges(session)}
+                  onViewChanges={(session) => {
+                    if (onViewChanges) onViewChanges(session);
+                    else console.warn("AiHistoryPanel: onViewChanges prop not provided");
+                  }}
                 />
               );
             })}
