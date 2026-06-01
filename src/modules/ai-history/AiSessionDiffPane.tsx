@@ -24,11 +24,6 @@ type Props = {
   }) => void;
 };
 
-type DiffState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "done"; text: string }
-  | { status: "error"; message: string };
 
 export const AiSessionDiffPane = memo(function AiSessionDiffPane({
   tab,
