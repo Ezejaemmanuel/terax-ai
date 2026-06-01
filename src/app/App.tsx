@@ -92,7 +92,7 @@ import {
   leafIds,
   respawnSession,
   TerminalStack,
-  whenSessionReady,
+  writeCommandToSessionWhenReady,
   writeToSession,
   type TerminalPaneHandle,
 } from "@/modules/terminal";
@@ -1309,8 +1309,8 @@ export default function App() {
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
         const hooksReady = invoke("agent_enable_claude_hooks").catch(() => {});
         void (async () => {
-          await Promise.all([whenSessionReady(leafId), hooksReady]);
-          if (!writeToSession(leafId, "claude\r")) {
+          await hooksReady;
+          if (!(await writeCommandToSessionWhenReady(leafId, "claude"))) {
             useManagedAgentsStore.getState().remove(leafId);
             return;
           }
@@ -1502,19 +1502,12 @@ export default function App() {
                   const tabId = newTab(session.cwd || undefined);
                   setActiveId(tabId);
                   const leafId = tabId + 1;
-                  const cmd = `claude --resume ${session.id}`;
-                  const deadline = Date.now() + 8000;
-                  let sent = false;
-                  while (Date.now() < deadline) {
-                    if (writeToSession(leafId, cmd)) {
-                      await new Promise<void>((r) => setTimeout(r, 120));
-                      writeToSession(leafId, "\r");
-                      sent = true;
-                      break;
-                    }
-                    await new Promise<void>((r) => setTimeout(r, 150));
-                  }
-                  if (sent) {
+                  if (
+                    await writeCommandToSessionWhenReady(
+                      leafId,
+                      `claude --resume ${session.id}`,
+                    )
+                  ) {
                     setSessionMapping(session.id, tabId, session.title);
                     addFolder(
                       session.cwd,
@@ -1536,16 +1529,14 @@ export default function App() {
                   const tabId = newTab(cwd);
                   setActiveId(tabId);
                   const leafId = tabId + 1;
-                  const deadline = Date.now() + 8000;
-                  while (Date.now() < deadline) {
-                    if (writeToSession(leafId, "claude --permission-mode auto")) {
-                      await new Promise<void>((r) => setTimeout(r, 120));
-                      writeToSession(leafId, "\r");
-                      break;
-                    }
-                    await new Promise<void>((r) => setTimeout(r, 150));
+                  if (
+                    await writeCommandToSessionWhenReady(
+                      leafId,
+                      "claude --permission-mode auto",
+                    )
+                  ) {
+                    addFolder(cwd, cwd.split(/[\\/]/).pop() ?? cwd);
                   }
-                  addFolder(cwd, cwd.split(/[\\/]/).pop() ?? cwd);
                 } catch (err) {
                   console.error("[FolderStrip] Failed to open new session:", err);
                 } finally {
@@ -1672,6 +1663,7 @@ export default function App() {
                   tabs={tabs}
                   activeId={activeId}
                   onSelect={setActiveId}
+                  onClose={handleClose}
                 />
               </ResizablePanel>
             </ResizablePanelGroup>

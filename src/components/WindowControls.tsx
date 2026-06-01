@@ -79,6 +79,7 @@ function CtlButton({
       type="button"
       aria-label={ariaLabel}
       title={ariaLabel}
+      data-no-drag
       onClick={onClick}
       className={cn(
         "grid size-7 place-items-center rounded-md text-muted-foreground transition-colors",

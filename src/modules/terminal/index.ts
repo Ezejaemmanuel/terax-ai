@@ -6,6 +6,7 @@ export {
   leafIdForPty,
   respawnSession,
   whenSessionReady,
+  writeCommandToSessionWhenReady,
   writeToSession,
 } from "./lib/useTerminalSession";
 export {

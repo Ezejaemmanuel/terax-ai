@@ -328,6 +328,13 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     slot.term.resize(p.cols, p.rows);
   }
 
+  for (const d of slot.oscDisposers) {
+    try {
+      d();
+    } catch {}
+  }
+  slot.oscDisposers = p.registerOsc(slot.term);
+
   if (p.snapshot) {
     try {
       slot.term.write(p.snapshot);
@@ -346,13 +353,6 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
   try {
     slot.term.write("\x1b[?25h");
   } catch {}
-
-  for (const d of slot.oscDisposers) {
-    try {
-      d();
-    } catch {}
-  }
-  slot.oscDisposers = p.registerOsc(slot.term);
 
   setupResizeObserver(slot, p);
   slot.fitAddon.fit();

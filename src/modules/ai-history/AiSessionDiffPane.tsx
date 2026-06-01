@@ -25,6 +25,16 @@ type Props = {
 };
 
 
+function toRelativePath(absPath: string, repoRoot: string): string {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const root = norm(repoRoot).replace(/\/$/, "");
+  const abs = norm(absPath);
+  const windowsRoot = /^[A-Za-z]:\//.test(root);
+  const cmpRoot = windowsRoot ? root.toLowerCase() : root;
+  const cmpAbs = windowsRoot ? abs.toLowerCase() : abs;
+  return cmpAbs.startsWith(cmpRoot + "/") ? abs.slice(root.length + 1) : abs;
+}
+
 export const AiSessionDiffPane = memo(function AiSessionDiffPane({
   tab,
   onClose,
@@ -55,8 +65,9 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
         setHasGit(gitOk);
         setRepoRoot(repoInfo?.repoRoot ?? null);
         if (changedFiles.length > 0 && gitOk && repoInfo?.repoRoot) {
+          const relPath = toRelativePath(changedFiles[0], repoInfo.repoRoot);
           onOpenFileDiff({
-            path: changedFiles[0],
+            path: relPath,
             repoRoot: repoInfo.repoRoot,
             mode: "+",
             originalPath: null,
@@ -148,7 +159,7 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
                 onClick={() => {
                   if (repoRoot) {
                     onOpenFileDiff({
-                      path: fp,
+                      path: toRelativePath(fp, repoRoot),
                       repoRoot,
                       mode: "+",
                       originalPath: null,
@@ -173,4 +184,3 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
     </div>
   );
 });
-

@@ -100,6 +100,23 @@ export function writeToSession(leafId: number, data: string): boolean {
   return true;
 }
 
+export async function writeCommandToSessionWhenReady(
+  leafId: number,
+  command: string,
+  timeoutMs = 8000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (writeToSession(leafId, command)) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 120));
+      writeToSession(leafId, "\r");
+      return true;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+  }
+  return false;
+}
+
 /**
  * Clear the scrollback and screen of the currently focused terminal, keeping
  * the active prompt line — macOS Terminal's ⌘K behaviour. Returns false when no
@@ -191,6 +208,25 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     await ensureMonoFontsLoaded();
     await document.fonts.ready;
   })();
+
+  // Start the PTY immediately — shell output lands in the dormant ring so
+  // that when the renderer slot is acquired (after fonts load) the terminal
+  // already contains the shell prompt instead of showing a blank screen.
+  session.ptyOpening = true;
+  openPtyForSession(leafId, session, initialCwd)
+    .then((pty) => {
+      session.ptyOpening = false;
+      if (session.disposed) {
+        pty.close();
+        return;
+      }
+      session.pty = pty;
+      if (session.cols > 0 && session.rows > 0) pty.resize(session.cols, session.rows);
+    })
+    .catch((e) => {
+      session.ptyOpening = false;
+      console.error("[terax] openPty failed:", e);
+    });
 
   return session;
 }

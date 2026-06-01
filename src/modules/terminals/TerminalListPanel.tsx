@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import type { Tab, TerminalTab } from "@/modules/tabs/lib/useTabs";
-import { ComputerTerminal02Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, ComputerTerminal02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo } from "react";
 
@@ -10,6 +10,7 @@ type Props = {
   tabs: Tab[];
   activeId: number;
   onSelect: (id: number) => void;
+  onClose: (id: number) => void;
 };
 
 function cwdBasename(cwd?: string): string {
@@ -22,6 +23,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   tabs,
   activeId,
   onSelect,
+  onClose,
 }: Props) {
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, { status: string }> }) => s.sessions,
@@ -54,46 +56,60 @@ export const TerminalListPanel = memo(function TerminalListPanel({
               const status = agentSession?.status as "working" | "waiting" | undefined;
 
               return (
-                <button
+                <div
                   key={tab.id}
-                  type="button"
-                  onClick={() => onSelect(tab.id)}
                   className={cn(
-                    "flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
+                    "group flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
                     isActive
                       ? "bg-accent/60 text-foreground"
                       : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                   )}
                 >
-                  <HugeiconsIcon
-                    icon={ComputerTerminal02Icon}
-                    size={12}
-                    strokeWidth={1.75}
-                    className="mt-0.5 shrink-0"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <span className="block truncate text-[11.5px] font-medium leading-tight">
-                      {label}
-                    </span>
-                    {sublabel && (
-                      <span className="block truncate text-[10px] text-muted-foreground/60">
-                        {sublabel}
+                  <button
+                    type="button"
+                    onClick={() => onSelect(tab.id)}
+                    className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                  >
+                    <HugeiconsIcon
+                      icon={ComputerTerminal02Icon}
+                      size={12}
+                      strokeWidth={1.75}
+                      className="mt-0.5 shrink-0"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[11.5px] font-medium leading-tight">
+                        {label}
                       </span>
+                      {sublabel && (
+                        <span className="block truncate text-[10px] text-muted-foreground/60">
+                          {sublabel}
+                        </span>
+                      )}
+                    </span>
+                    {status === "working" && (
+                      <span
+                        title="Working"
+                        className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                      />
                     )}
-                  </div>
-                  {status === "working" && (
-                    <span
-                      title="Working"
-                      className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
-                    />
+                    {status === "waiting" && (
+                      <span
+                        title="Waiting for input"
+                        className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400"
+                      />
+                    )}
+                  </button>
+                  {terminalTabs.length > 1 && (
+                    <button
+                      type="button"
+                      aria-label="Close terminal"
+                      onClick={() => onClose(tab.id)}
+                      className="mt-0.5 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent/60 hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
+                    >
+                      <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={2} />
+                    </button>
                   )}
-                  {status === "waiting" && (
-                    <span
-                      title="Waiting for input"
-                      className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400"
-                    />
-                  )}
-                </button>
+                </div>
               );
             })}
           </div>
