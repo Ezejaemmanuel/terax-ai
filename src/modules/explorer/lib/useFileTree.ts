@@ -103,7 +103,13 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   }, []);
 
   const fetchChildren = useCallback(async (path: string) => {
-    setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
+    // Only show a loading spinner on the very first fetch for this path.
+    // Background refreshes (triggered by the file watcher) keep the existing
+    // entries visible so the tree doesn't blink blank while the refetch runs.
+    setNodes((s) => {
+      if (s[path]?.status === "loaded") return s;
+      return { ...s, [path]: { status: "loading" } };
+    });
     try {
       const entries = await invoke<DirEntry[]>("fs_read_dir", {
         path,
