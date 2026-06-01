@@ -35,7 +35,7 @@ fn file_mtime_ms_str(path: &Path) -> String {
         .and_then(|m| m.modified())
         .and_then(|t| {
             t.duration_since(UNIX_EPOCH)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                .map_err(std::io::Error::other)
         })
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
@@ -48,7 +48,7 @@ fn short_name(path: &str) -> String {
     normalized
         .split('/')
         .filter(|s| !s.is_empty())
-        .last()
+        .next_back()
         .unwrap_or(path)
         .to_string()
 }
