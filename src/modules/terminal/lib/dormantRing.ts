@@ -1,5 +1,19 @@
-const DEFAULT_BYTE_CAP = 256 * 1024;
+const MIN_BYTE_CAP = 256 * 1024;
 const DEFAULT_CHUNK_CAP = 256;
+// Raw PTY bytes per line, intentionally generous (ANSI colour output is well
+// under this) so the dormant buffer never drops anything the live scrollback
+// would still show. This ties the background-buffer size to the scrollback
+// preference instead of a fixed cap.
+const BYTES_PER_LINE = 512;
+
+export function dormantByteCapForScrollback(scrollbackLines: number): number {
+  const lines = Number.isFinite(scrollbackLines) ? Math.floor(scrollbackLines) : 0;
+  return Math.max(MIN_BYTE_CAP, lines * BYTES_PER_LINE);
+}
+
+function chunkCapForBytes(byteCap: number): number {
+  return Math.max(DEFAULT_CHUNK_CAP, Math.ceil(byteCap / 1024));
+}
 
 const OVERFLOW_NOTICE = new TextEncoder().encode(
   "\x1bc\x1b[2m[terax: dropped output during hibernation]\x1b[0m\r\n",
@@ -12,10 +26,22 @@ export class DormantRing {
   private total = 0;
   private overflowed = false;
 
-  constructor(
-    private readonly byteCap = DEFAULT_BYTE_CAP,
-    private readonly chunkCap = DEFAULT_CHUNK_CAP,
-  ) {}
+  private byteCap: number;
+  private chunkCap: number;
+
+  constructor(byteCap = MIN_BYTE_CAP, chunkCap = chunkCapForBytes(byteCap)) {
+    this.byteCap = byteCap;
+    this.chunkCap = chunkCap;
+  }
+
+  // Resize live (e.g. when the scrollback preference changes). Shrinking
+  // immediately evicts the oldest chunks down to the new cap.
+  setByteCap(byteCap: number): void {
+    if (byteCap === this.byteCap) return;
+    this.byteCap = byteCap;
+    this.chunkCap = chunkCapForBytes(byteCap);
+    this.evict();
+  }
 
   push(bytes: Uint8Array): void {
     if (bytes.length === 0) return;
@@ -30,6 +56,14 @@ export class DormantRing {
     this.chunks.push(bytes);
     this.size++;
     this.total += bytes.length;
+    this.evict();
+    if (this.head > 1024 && this.head > this.chunks.length / 2) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
+    }
+  }
+
+  private evict(): void {
     while (
       (this.total > this.byteCap || this.size > this.chunkCap) &&
       this.size > 1
@@ -40,10 +74,6 @@ export class DormantRing {
       this.size--;
       this.total -= dropped.length;
       this.overflowed = true;
-    }
-    if (this.head > 1024 && this.head > this.chunks.length / 2) {
-      this.chunks = this.chunks.slice(this.head);
-      this.head = 0;
     }
   }
 

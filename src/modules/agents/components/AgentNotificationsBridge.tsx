@@ -78,7 +78,9 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
       return;
     }
     case "finished": {
-      store.setStatus(leafId, "waiting");
+      // Stop hook fires at the end of every response turn — show "Completed".
+      // The next prompt flips it back to "working" via the working signal.
+      store.setStatus(leafId, "completed");
       const session = store.sessions[leafId];
       if (session) route(session, "finished", ctx);
       maybeTriggerManagedReview(leafId);

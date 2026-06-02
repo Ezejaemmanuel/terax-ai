@@ -141,11 +141,11 @@ export const TERMINAL_FONT_SIZES = [
   10, 12, 13, 14, 15, 16, 18, 20, 22, 24,
 ] as const;
 
-export const TERMINAL_SCROLLBACK_DEFAULT = 2000;
+export const TERMINAL_SCROLLBACK_DEFAULT = 10_000;
 export const TERMINAL_SCROLLBACK_MIN = 200;
 export const TERMINAL_SCROLLBACK_MAX = 50_000;
 export const TERMINAL_SCROLLBACK_PRESETS = [
-  500, 1000, 2000, 5000, 10_000, 25_000,
+  500, 1000, 2000, 5000, 10_000, 25_000, 50_000,
 ] as const;
 
 export const DEFAULT_PREFERENCES: Preferences = {

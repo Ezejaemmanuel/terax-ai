@@ -4,7 +4,7 @@ import { useAgentStore } from "@/modules/agents/store/agentStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { DormantRing } from "./dormantRing";
+import { DormantRing, dormantByteCapForScrollback } from "./dormantRing";
 import {
   createShellIntegrationState,
   registerCwdHandler,
@@ -201,7 +201,11 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     container: null,
     snapshot: null,
     searchQuery: null,
-    dormantRing: new DormantRing(),
+    dormantRing: new DormantRing(
+      dormantByteCapForScrollback(
+        usePreferencesStore.getState().terminalScrollback,
+      ),
+    ),
     hasSlot: false,
     gotFirstByte: false,
     altScreenAtRelease: false,
@@ -429,7 +433,9 @@ export async function respawnSession(
   s.pty?.close();
   s.pty = null;
   s.snapshot = null;
-  s.dormantRing = new DormantRing();
+  s.dormantRing = new DormantRing(
+    dormantByteCapForScrollback(usePreferencesStore.getState().terminalScrollback),
+  );
   s.shellExited = false;
   s.pendingExit = null;
   s.altScreenAtRelease = false;
@@ -542,6 +548,9 @@ export function useTerminalSession({
   const scrollback = usePreferencesStore((p) => p.terminalScrollback);
   useEffect(() => {
     applyScrollback(scrollback);
+    // Keep each hidden tab's background buffer sized to the live scrollback.
+    const cap = dormantByteCapForScrollback(scrollback);
+    for (const s of sessions.values()) s.dormantRing.setByteCap(cap);
   }, [scrollback]);
 
   const webglPref = usePreferencesStore((p) => p.terminalWebglEnabled);

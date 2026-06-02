@@ -28,6 +28,8 @@ import {
 } from "./lib/useAiHistory";
 import { useSessionTabStore } from "./lib/sessionTabStore";
 import { useActiveFolderStore } from "@/modules/terminals/activeFolderStore";
+import { agentStatusStyle } from "@/modules/agents/lib/statusLabel";
+import type { AgentStatus } from "@/modules/agents/lib/types";
 
 type Props = {
   tool: "claude" | "codex";
@@ -59,8 +61,8 @@ async function writeWhenReady(
   return false;
 }
 
-/** Status of Claude Code in a terminal tab */
-type LiveStatus = "working" | "waiting" | null;
+/** Status of Claude Code in a terminal tab (null = no live session) */
+type LiveStatus = AgentStatus | null;
 
 export const AiHistoryPanel = memo(function AiHistoryPanel({
   tool,
@@ -160,6 +162,20 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
       ),
     [projects, liveStatusForCwd],
   );
+
+  // Per-session live status, keyed by sessionId. Only sessions we opened/resumed
+  // have a tab mapping; we follow sessionId → tabId → activeLeafId → status.
+  const sessionStatuses = useMemo(() => {
+    const m = new Map<string, AgentStatus>();
+    for (const [sessionId, tabId] of storeMap) {
+      const tab = tabs.find((t) => t.id === tabId);
+      if (tab && tab.kind === "terminal") {
+        const session = agentSessions[(tab as TerminalTab).activeLeafId];
+        if (session) m.set(sessionId, session.status);
+      }
+    }
+    return m;
+  }, [storeMap, tabs, agentSessions]);
 
   const openSession = useCallback(
     async (session: AiSession) => {
@@ -276,6 +292,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
                   project={project}
                   isCollapsed={collapsed.has(project.fullPath)}
                   liveStatus={liveInfo.status}
+                  sessionStatuses={sessionStatuses}
                   onToggleCollapse={() => toggleCollapse(project.fullPath)}
                   visibleSessions={visibleSessions(project)}
                   hiddenCount={hiddenCount(project)}
@@ -303,6 +320,7 @@ type ProjectRowProps = {
   project: AiProject;
   isCollapsed: boolean;
   liveStatus: LiveStatus;
+  sessionStatuses: Map<string, AgentStatus>;
   onToggleCollapse: () => void;
   visibleSessions: AiSession[];
   hiddenCount: number;
@@ -319,6 +337,7 @@ const ProjectRow = memo(function ProjectRow({
   project,
   isCollapsed,
   liveStatus,
+  sessionStatuses,
   onToggleCollapse,
   visibleSessions,
   hiddenCount,
@@ -351,19 +370,8 @@ const ProjectRow = memo(function ProjectRow({
           <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-foreground/90">
             {project.name}
           </span>
-          {/* Live status dot */}
-          {liveStatus === "working" && (
-            <span
-              title="Claude Code is working"
-              className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-500"
-            />
-          )}
-          {liveStatus === "waiting" && (
-            <span
-              title="Claude Code is waiting for input"
-              className="size-2 shrink-0 animate-pulse rounded-full bg-amber-400"
-            />
-          )}
+          {/* Live status — dot + text label */}
+          {liveStatus && <StatusLabel status={liveStatus} />}
         </button>
         {/* New session button — visible on row hover */}
         <button
@@ -398,6 +406,7 @@ const ProjectRow = memo(function ProjectRow({
             <SessionRow
               key={session.id}
               session={session}
+              liveStatus={sessionStatuses.get(session.id) ?? null}
               isFirst={i === 0}
               isOpening={openingId === session.id}
               onOpen={() => onOpenSession(session)}
@@ -423,6 +432,7 @@ const ProjectRow = memo(function ProjectRow({
 
 type SessionRowProps = {
   session: AiSession;
+  liveStatus: LiveStatus;
   isFirst: boolean;
   isOpening: boolean;
   onOpen: () => void;
@@ -432,6 +442,7 @@ type SessionRowProps = {
 
 const SessionRow = memo(function SessionRow({
   session,
+  liveStatus,
   isFirst,
   isOpening,
   onOpen,
@@ -467,10 +478,14 @@ const SessionRow = memo(function SessionRow({
             <span className="min-w-0 flex-1 truncate text-[11.5px]">
               {session.title}
             </span>
-            {time && (
-              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/55">
-                {time}
-              </span>
+            {liveStatus ? (
+              <StatusLabel status={liveStatus} />
+            ) : (
+              time && (
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/55">
+                  {time}
+                </span>
+              )
             )}
           </button>
           {/* View changes button — appears on row hover */}
@@ -502,3 +517,17 @@ const SessionRow = memo(function SessionRow({
     </ContextMenu>
   );
 });
+
+/** Dot + text label for a live agent status, shared by project and session rows. */
+function StatusLabel({ status }: { status: AgentStatus }) {
+  const s = agentStatusStyle(status);
+  return (
+    <span className="flex shrink-0 items-center gap-1" title={`Claude Code: ${s.text}`}>
+      <span
+        aria-hidden
+        className={cn("size-1.5 shrink-0 rounded-full", s.dot, s.pulse && "animate-pulse")}
+      />
+      <span className={cn("text-[10px] font-medium", s.textColor)}>{s.text}</span>
+    </span>
+  );
+}

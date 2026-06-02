@@ -1,4 +1,4 @@
-export type AgentStatus = "working" | "waiting";
+export type AgentStatus = "working" | "waiting" | "completed";
 
 export type AgentSource = "terminal" | "local";
 

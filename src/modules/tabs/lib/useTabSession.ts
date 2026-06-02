@@ -203,7 +203,12 @@ export function useTabSession(
           console.log("[terax] save done — destroying window");
           // Use destroy() not close(): close() re-fires CloseRequested
           // causing an infinite loop that prevents the window from closing.
-          void win.destroy();
+          // Requires the core:window:allow-destroy capability.
+          win.destroy().catch((e) => {
+            console.error("[terax] window.destroy() failed:", e);
+            // Last-ditch fallback: exit the whole process.
+            void invoke("exit_app").catch(() => {});
+          });
         });
     });
     // Clean up on page unload — not on component unmount — to avoid

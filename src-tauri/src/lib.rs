@@ -199,6 +199,7 @@ pub fn run() {
             ai_history::session_git_init,
             ai_history::session_file_diff,
             open_devtools,
+            exit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -207,4 +208,13 @@ pub fn run() {
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
+}
+
+// Hard fallback for graceful close: if the frontend's window.destroy() ever
+// fails (e.g. a missing capability), exit the whole process so the window
+// can never get stuck open.
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    log::info!("exit_app: terminating process");
+    app.exit(0);
 }

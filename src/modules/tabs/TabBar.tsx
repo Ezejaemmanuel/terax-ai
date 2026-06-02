@@ -34,6 +34,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
+import { agentStatusStyle } from "@/modules/agents/lib/statusLabel";
 import type { EditorTab, Tab } from "./lib/useTabs";
 
 const TAB_COLORS = [
@@ -248,20 +249,30 @@ export function TabBar({
                               className="size-1.5 shrink-0 rounded-full bg-foreground/70"
                             />
                           ) : null}
-                          {/* Live Claude Code / Codex status dot */}
+                          {/* Live Claude Code / Codex status — dot + text label */}
                           {t.kind === "terminal" && (() => {
                             const session = agentSessions[t.activeLeafId];
                             if (!session) return null;
+                            const s = agentStatusStyle(session.status);
                             return (
-                              <span
-                                aria-label={session.status === "waiting" ? "Waiting for input" : "Working"}
-                                className={cn(
-                                  "size-1.5 shrink-0 animate-pulse rounded-full",
-                                  session.status === "waiting"
-                                    ? "bg-amber-400"
-                                    : "bg-emerald-500",
-                                )}
-                              />
+                              <span className="flex shrink-0 items-center gap-1">
+                                <span
+                                  aria-hidden
+                                  className={cn(
+                                    "size-1.5 shrink-0 rounded-full",
+                                    s.dot,
+                                    s.pulse && "animate-pulse",
+                                  )}
+                                />
+                                <span
+                                  className={cn(
+                                    "shrink-0 text-[10px] font-medium",
+                                    s.textColor,
+                                  )}
+                                >
+                                  {s.text}
+                                </span>
+                              </span>
                             );
                           })()}
                           {t.pinned ? (
