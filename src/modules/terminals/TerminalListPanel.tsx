@@ -3,10 +3,17 @@ import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import type { AgentSession } from "@/modules/agents/lib/types";
 import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
+import { copyToClipboard } from "@/modules/explorer/lib/contextActions";
 import type { Tab, TerminalTab } from "@/modules/tabs/lib/useTabs";
-import { Cancel01Icon, ComputerTerminal02Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, ComputerTerminal02Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo } from "react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 type Props = {
   tabs: Tab[];
@@ -58,78 +65,88 @@ export const TerminalListPanel = memo(function TerminalListPanel({
               const status = agentSession?.status;
 
               return (
-                <div
-                  key={tab.id}
-                  className={cn(
-                    "group flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
-                    // Left accent marks a terminal that hosts a coding agent.
-                    agentSession
-                      ? "border-l-2 border-emerald-500/70 pl-[10px]"
-                      : "border-l-2 border-transparent",
-                    isActive
-                      ? "bg-accent/60 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSelect(tab.id)}
-                    className="flex min-w-0 flex-1 items-start gap-2 text-left"
-                  >
-                    {agentSession ? (
-                      <AgentIcon
-                        agent={agentSession.agent}
-                        size={13}
-                        className="mt-0.5 shrink-0"
-                      />
-                    ) : (
-                      <HugeiconsIcon
-                        icon={ComputerTerminal02Icon}
-                        size={12}
-                        strokeWidth={1.75}
-                        className="mt-0.5 shrink-0"
-                      />
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[11.5px] font-medium leading-tight">
-                        {label}
-                      </span>
-                      {sublabel && (
-                        <span className="block truncate text-[10px] text-muted-foreground/60">
-                          {sublabel}
-                        </span>
+                <ContextMenu key={tab.id}>
+                  <ContextMenuTrigger asChild>
+                    <div
+                      className={cn(
+                        "group flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
+                        agentSession
+                          ? "border-l-2 border-emerald-500/70 pl-[10px]"
+                          : "border-l-2 border-transparent",
+                        isActive
+                          ? "bg-accent/60 text-foreground"
+                          : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                       )}
-                    </span>
-                    {status === "working" && (
-                      <span
-                        title="Working"
-                        className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
-                      />
-                    )}
-                    {status === "waiting" && (
-                      <span
-                        title="Waiting for input"
-                        className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400"
-                      />
-                    )}
-                    {status === "completed" && (
-                      <span
-                        title="Idle"
-                        className="mt-1 size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
-                      />
-                    )}
-                  </button>
-                  {terminalTabs.length > 1 && (
-                    <button
-                      type="button"
-                      aria-label="Close terminal"
-                      onClick={() => onClose(tab.id)}
-                      className="mt-0.5 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent/60 hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
                     >
-                      <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={2} />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(tab.id)}
+                        className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                      >
+                        {agentSession ? (
+                          <AgentIcon
+                            agent={agentSession.agent}
+                            size={13}
+                            className="mt-0.5 shrink-0"
+                          />
+                        ) : (
+                          <HugeiconsIcon
+                            icon={ComputerTerminal02Icon}
+                            size={12}
+                            strokeWidth={1.75}
+                            className="mt-0.5 shrink-0"
+                          />
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[11.5px] font-medium leading-tight">
+                            {label}
+                          </span>
+                          {sublabel && (
+                            <span className="block truncate text-[10px] text-muted-foreground/60">
+                              {sublabel}
+                            </span>
+                          )}
+                        </span>
+                        {status === "working" && (
+                          <span
+                            title="Working"
+                            className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                          />
+                        )}
+                        {status === "waiting" && (
+                          <span
+                            title="Waiting for input"
+                            className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400"
+                          />
+                        )}
+                        {status === "completed" && (
+                          <span
+                            title="Idle"
+                            className="mt-1 size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
+                          />
+                        )}
+                      </button>
+                      {terminalTabs.length > 1 && (
+                        <button
+                          type="button"
+                          aria-label="Close terminal"
+                          onClick={() => onClose(tab.id)}
+                          className="mt-0.5 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent/60 hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
+                        >
+                          <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={2} />
+                        </button>
+                      )}
+                    </div>
+                  </ContextMenuTrigger>
+                  {tab.cwd && (
+                    <ContextMenuContent>
+                      <ContextMenuItem onClick={() => copyToClipboard(tab.cwd!)}>
+                        <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
+                        Copy file path
+                      </ContextMenuItem>
+                    </ContextMenuContent>
                   )}
-                </div>
+                </ContextMenu>
               );
             })}
           </div>

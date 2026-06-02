@@ -31,6 +31,9 @@ pub enum Transition {
     Attention,
     Finished,
     Exited,
+    // The agent's own session id, reported by its hook over the OSC 777 marker
+    // so the host can bind this exact session to the terminal it runs in.
+    Session { id: String },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -38,18 +41,22 @@ pub struct AgentSignal {
     pub id: u32,
     pub kind: &'static str,
     pub agent: Option<String>,
+    pub session: Option<String>,
 }
 
 impl Transition {
     pub fn into_signal(self, id: u32) -> AgentSignal {
         match self {
             Transition::Started { agent } => {
-                AgentSignal { id, kind: "started", agent: Some(agent) }
+                AgentSignal { id, kind: "started", agent: Some(agent), session: None }
             }
-            Transition::Working => AgentSignal { id, kind: "working", agent: None },
-            Transition::Attention => AgentSignal { id, kind: "attention", agent: None },
-            Transition::Finished => AgentSignal { id, kind: "finished", agent: None },
-            Transition::Exited => AgentSignal { id, kind: "exited", agent: None },
+            Transition::Working => AgentSignal { id, kind: "working", agent: None, session: None },
+            Transition::Attention => AgentSignal { id, kind: "attention", agent: None, session: None },
+            Transition::Finished => AgentSignal { id, kind: "finished", agent: None, session: None },
+            Transition::Exited => AgentSignal { id, kind: "exited", agent: None, session: None },
+            Transition::Session { id: sid } => {
+                AgentSignal { id, kind: "session", agent: None, session: Some(sid) }
+            }
         }
     }
 }
@@ -60,6 +67,7 @@ pub struct AgentDetector {
     osc: Vec<u8>,
     armed: bool,
     status: Status,
+    session: Option<String>,
 }
 
 impl AgentDetector {
@@ -74,6 +82,7 @@ impl AgentDetector {
             osc: Vec::new(),
             armed: false,
             status: Status::Working,
+            session: None,
         }
     }
 
@@ -142,6 +151,7 @@ impl AgentDetector {
     fn disarm(&mut self) {
         self.armed = false;
         self.status = Status::Working;
+        self.session = None;
     }
 
     fn finish_osc<F: FnMut(Transition)>(&mut self, emit: &mut F) {
@@ -160,10 +170,15 @@ impl AgentDetector {
     }
 
     fn handle_osc777<F: FnMut(Transition)>(&mut self, pt: &[u8], emit: &mut F) {
-        if let Some(event) = pt.strip_prefix(TERAX_MARKER) {
+        if let Some(rest) = pt.strip_prefix(TERAX_MARKER) {
+            // Marker body is `<event>` or `<event>;<session_id>`.
+            let (kind, sid) = match rest.iter().position(|&c| c == b';') {
+                Some(i) => (&rest[..i], &rest[i + 1..]),
+                None => (rest, &rest[0..0]),
+            };
             // Self-arms so notifications work even when no shell preexec fired
             // (bash, Windows, tmux, wrappers).
-            match event {
+            match kind {
                 b"working" => {
                     self.ensure_armed(emit);
                     self.set_working(emit);
@@ -178,11 +193,28 @@ impl AgentDetector {
                     self.status = Status::Waiting;
                     emit(Transition::Finished);
                 }
-                _ => {}
+                _ => return,
             }
+            self.report_session(sid, emit);
             return;
         }
         self.generic_attention(emit);
+    }
+
+    /// Emit the agent's session id once per distinct id. A new id in a later
+    /// marker (e.g. the user started a fresh `claude` in the same terminal)
+    /// re-reports, so the host rebinds even without an exit signal.
+    fn report_session<F: FnMut(Transition)>(&mut self, sid: &[u8], emit: &mut F) {
+        if sid.is_empty() {
+            return;
+        }
+        if let Ok(s) = std::str::from_utf8(sid) {
+            if self.session.as_deref() != Some(s) {
+                self.session = Some(s.to_string());
+                log::info!("[agent] session id reported: {s}");
+                emit(Transition::Session { id: s.to_string() });
+            }
+        }
     }
 
     fn handle_osc133<F: FnMut(Transition)>(&mut self, pt: &[u8], emit: &mut F) {
@@ -316,6 +348,27 @@ mod tests {
         assert_eq!(run(&mut d, &osc("777;notify;Terax;working")), vec![Transition::Working]);
         assert!(run(&mut d, &osc("777;notify;Terax;working")).is_empty());
         assert_eq!(run(&mut d, &osc("777;notify;Terax;finished")), vec![Transition::Finished]);
+    }
+
+    #[test]
+    fn terax_marker_reports_session_id() {
+        let mut d = AgentDetector::new();
+        // First marker arms (Started already sets status=working, so set_working
+        // is a no-op) and reports the session id.
+        assert_eq!(
+            run(&mut d, &osc("777;notify;Terax;working;abc-123")),
+            vec![started("claude"), Transition::Session { id: "abc-123".into() }]
+        );
+        // Same id again on a later turn: status only, no duplicate Session.
+        assert_eq!(
+            run(&mut d, &osc("777;notify;Terax;finished;abc-123")),
+            vec![Transition::Finished]
+        );
+        // A different id rebinds (status also flips back to working).
+        assert_eq!(
+            run(&mut d, &osc("777;notify;Terax;working;def-456")),
+            vec![Transition::Working, Transition::Session { id: "def-456".into() }]
+        );
     }
 
     #[test]

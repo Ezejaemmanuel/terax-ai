@@ -2,6 +2,7 @@ import type { Tab } from "@/modules/tabs";
 import { hasLeaf, leafIdForPty } from "@/modules/terminal";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
 import type { AgentSession, AgentSignal } from "../lib/types";
@@ -101,6 +102,17 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
       store.finish(leafId);
       useManagedAgentsStore.getState().remove(leafId);
       return;
+    case "session": {
+      if (!sig.session) return;
+      const info = tabInfo(ctx.tabs, leafId);
+      if (!info) {
+        console.debug("[agent] session: no tab owns leaf", leafId, "— dropped");
+        return;
+      }
+      console.debug("[agent] link session", sig.session, "→ tab", info.tabId);
+      useSessionTabStore.getState().linkSession(sig.session, info.tabId);
+      return;
+    }
   }
 }
 

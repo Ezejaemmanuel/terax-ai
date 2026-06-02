@@ -20,8 +20,10 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { copyToClipboard } from "@/modules/explorer/lib/contextActions";
 import {
   type AiProject,
   type AiSession,
@@ -100,6 +102,21 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     const activeTabIds = new Set(tabs.map((t) => t.id));
     clearStaleTabIds(activeTabIds);
   }, [tabs, storeMap, clearStaleTabIds]);
+
+  // Keep terminal-list titles in sync with the live history. Sessions linked by
+  // the agent hook (new chats) only get their real, derived title once it lands
+  // in history; mirror it onto the tab so the terminal list shows it.
+  useEffect(() => {
+    for (const [sessionId, tabId] of storeMap) {
+      for (const p of projects) {
+        const session = p.sessions.find((x) => x.id === sessionId);
+        if (session) {
+          setTabTitle(tabId, session.title);
+          break;
+        }
+      }
+    }
+  }, [storeMap, projects, setTabTitle]);
 
   // Agent sessions from the store — keyed by leafId.
   const agentSessions = useAgentStore((s: { sessions: Record<number, import("@/modules/agents/lib/types").AgentSession> }) => s.sessions);
@@ -520,6 +537,11 @@ const SessionRow = memo(function SessionRow({
         <ContextMenuItem onClick={onViewChanges}>
           <HugeiconsIcon icon={FileEditIcon} size={14} strokeWidth={1.75} />
           View changes
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => copyToClipboard(session.cwd)}>
+          <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
+          Copy file path
         </ContextMenuItem>
         <ContextMenuItem onClick={onCopyId}>
           <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />

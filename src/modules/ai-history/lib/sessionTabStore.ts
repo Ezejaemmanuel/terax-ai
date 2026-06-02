@@ -5,6 +5,7 @@ type SessionTabState = {
   tabTitles: Map<number, string>;  // tabId → session title (for terminal list display)
   setMapping: (sessionId: string, tabId: number, sessionTitle: string) => void;
   setTabTitle: (tabId: number, title: string) => void;
+  linkSession: (sessionId: string, tabId: number) => void;
   clearByTabId: (tabId: number) => void;
   clearStaleTabIds: (activeTabIds: Set<number>) => void;
   getTabId: (sessionId: string) => number | undefined;
@@ -24,6 +25,21 @@ export const useSessionTabStore = create<SessionTabState>((set, get) => ({
       const nextTitles = new Map(s.tabTitles);
       nextTitles.set(tabId, sessionTitle);
       return { map: nextMap, tabTitles: nextTitles };
+    }),
+
+  // Binds a discovered Claude session id to a tab (from the agent hook) without
+  // touching the title. A tab hosts one session, so any other id pointing at
+  // this tab is dropped first. Lets re-opening that chat switch to the running
+  // terminal instead of spawning a duplicate.
+  linkSession: (sessionId, tabId) =>
+    set((s) => {
+      if (s.map.get(sessionId) === tabId) return s;
+      const nextMap = new Map(s.map);
+      for (const [sid, tid] of nextMap) {
+        if (tid === tabId) nextMap.delete(sid);
+      }
+      nextMap.set(sessionId, tabId);
+      return { map: nextMap };
     }),
 
   // Title-only update for tabs that have no Claude session id yet (new sessions,

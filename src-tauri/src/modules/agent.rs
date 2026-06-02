@@ -10,10 +10,13 @@ const HOOK_EVENTS: [(&str, &str); 3] = [
 const OWNED_MARKERS: [&str; 2] = ["notify;Terax;", "terax;notify"];
 
 // Gated on TERAX_TERMINAL; no-op outside Terax. Returns the sequence via
-// `terminalSequence` because hooks lost /dev/tty access in v2.1.139.
+// `terminalSequence` because hooks lost /dev/tty access in v2.1.139. Pulls the
+// session_id out of the hook's stdin JSON (POSIX parameter expansion, no
+// external tools) and appends it to the marker so the host can bind this exact
+// Claude session to the terminal it is running in.
 fn hook_cmd(event: &str) -> String {
     format!(
-        r#"[ -n "$TERAX_TERMINAL" ] && printf '{{"terminalSequence":"\\u001b]777;notify;Terax;{event}\\u0007"}}' || true"#
+        r#"[ -n "$TERAX_TERMINAL" ] || exit 0; in=$(cat); sid=${{in#*'"session_id":"'}}; sid=${{sid%%'"'*}}; printf '{{"terminalSequence":"\\u001b]777;notify;Terax;{event};%s\\u0007"}}' "$sid""#
     )
 }
 

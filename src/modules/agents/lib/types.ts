@@ -7,12 +7,14 @@ export type AgentSignalKind =
   | "working"
   | "attention"
   | "finished"
-  | "exited";
+  | "exited"
+  | "session";
 
 export type AgentSignal = {
   id: number;
   kind: AgentSignalKind;
   agent: string | null;
+  session?: string | null;
 };
 
 export type AgentSession = {
