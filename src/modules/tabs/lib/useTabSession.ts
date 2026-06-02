@@ -192,14 +192,19 @@ export function useTabSession(
   useEffect(() => {
     const win = getCurrentWindow();
     const unlistenPromise = win.onCloseRequested((event) => {
+      // win.close() re-emits CloseRequested, so guard against re-entrancy.
+      if ((win as unknown as { _teraxClosing?: boolean })._teraxClosing) return;
+      (win as unknown as { _teraxClosing?: boolean })._teraxClosing = true;
       event.preventDefault();
-      // Fire-and-forget: save with 3s timeout then close.
-      // We do NOT await win.close() because that is itself an IPC call and
-      // could hang if the IPC layer is busy. Scheduling it via Promise lets
-      // the event handler return immediately while the async work continues.
+      console.log("[terax] close requested — saving tabs");
       void flushSave()
-        .catch(() => {})
-        .finally(() => { void win.close(); });
+        .catch((e) => console.warn("[terax] flushSave failed:", e))
+        .finally(() => {
+          console.log("[terax] save done — destroying window");
+          // Use destroy() not close(): close() re-fires CloseRequested
+          // causing an infinite loop that prevents the window from closing.
+          void win.destroy();
+        });
     });
     // Clean up on page unload — not on component unmount — to avoid
     // a known Tauri bug where calling unlisten() breaks window closing.

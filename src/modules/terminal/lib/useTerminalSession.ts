@@ -52,6 +52,8 @@ type Session = {
   searchQuery: string | null;
   dormantRing: DormantRing;
   hasSlot: boolean;
+  // Diagnostic: logged once when the first PTY byte arrives for this session.
+  gotFirstByte: boolean;
   // True if the slot was in alt-screen mode (TUI like vim, htop, dofek)
   // at the most recent release. Read once on the next bind to trigger a
   // SIGWINCH-driven repaint instead of replaying dormant bytes.
@@ -201,35 +203,22 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     searchQuery: null,
     dormantRing: new DormantRing(),
     hasSlot: false,
+    gotFirstByte: false,
     altScreenAtRelease: false,
   };
   sessions.set(leafId, session);
 
+  // Fonts must be ready before xterm measures the cell grid, otherwise the
+  // first paint mis-sizes. We do NOT open the PTY here: opening it lazily in
+  // attachSession (once the renderer slot exists) means shell output writes
+  // straight into the terminal instead of racing the dormant-ring drain, and
+  // it avoids a startup stampede where every restored tab spawns a ConPTY at
+  // once and serializes on the Windows CONPTY_LIFECYCLE_LOCK (the cause of the
+  // "new/restored terminal stays blank forever" bug). See attachSession.
   session.ready = (async () => {
     await ensureMonoFontsLoaded();
     await document.fonts.ready;
   })();
-
-  // Start the PTY immediately — shell output lands in the dormant ring so
-  // that when the renderer slot is acquired (after fonts load) the terminal
-  // already contains the shell prompt instead of showing a blank screen.
-  session.ptyOpening = true;
-  openPtyForSession(leafId, session, initialCwd)
-    .then((pty) => {
-      console.debug(`[terax] PTY opened leaf=${leafId} id=${pty.id}`);
-      session.ptyOpening = false;
-      if (session.disposed) {
-        console.debug(`[terax] PTY opened but session disposed leaf=${leafId}, closing`);
-        pty.close();
-        return;
-      }
-      session.pty = pty;
-      if (session.cols > 0 && session.rows > 0) pty.resize(session.cols, session.rows);
-    })
-    .catch((e) => {
-      session.ptyOpening = false;
-      console.error("[terax] openPty failed:", e);
-    });
 
   return session;
 }
@@ -237,6 +226,12 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
 function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
   const s = sessions.get(leafId);
   if (!s) return;
+  if (!s.gotFirstByte) {
+    s.gotFirstByte = true;
+    console.debug(
+      `[terax] first PTY bytes leaf=${leafId} (${bytes.length}B) hasSlot=${!!getSlotForLeaf(leafId)}`,
+    );
+  }
   const slot = getSlotForLeaf(leafId);
   if (slot) slot.term.write(bytes);
   else s.dormantRing.push(bytes);
@@ -360,44 +355,61 @@ function attachSession(
   if (!s || s.disposed) return;
   s.callbacks = callbacks;
   s.container = container;
+  console.debug(
+    `[terax] attachSession leaf=${leafId} visible=${s.visibleNow} pty=${!!s.pty} opening=${s.ptyOpening}`,
+  );
 
-  if (s.visibleNow) bindLeafToSlot(leafId, s);
-
-  if (!s.pty && !s.ptyOpening && !s.shellExited) {
-    s.ptyOpening = true;
-    openPtyForSession(leafId, s, s.initialCwd)
-      .then((pty) => {
-        s.ptyOpening = false;
-        if (s.disposed) {
-          pty.close();
-          return;
-        }
-        s.pty = pty;
-        if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
-      })
-      .catch((e) => {
-        s.ptyOpening = false;
-        if (s.initialCwd) {
-          // The stored cwd (e.g. from a restored history session) is no longer
-          // accessible. Retry without it so the backend falls back to home dir.
-          console.warn("[terax] openPty failed for cwd, retrying without cwd:", e);
-          s.ptyOpening = true;
-          openPtyForSession(leafId, s, undefined)
-            .then((pty) => {
-              s.ptyOpening = false;
-              if (s.disposed) { pty.close(); return; }
-              s.pty = pty;
-              if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
-            })
-            .catch((e2) => {
-              s.ptyOpening = false;
-              console.error("[terax] openPty retry failed:", e2);
-            });
-        } else {
-          console.error("[terax] openPty failed:", e);
-        }
-      });
+  if (s.visibleNow) {
+    bindLeafToSlot(leafId, s);
+    // Open the PTY only for the visible tab. Restored-but-hidden tabs defer
+    // their spawn until first viewed (see the visible effect), so we never
+    // fire N simultaneous ConPTY spawns at startup — that pile-up on the
+    // Windows CONPTY_LIFECYCLE_LOCK was leaving the active terminal blank.
+    ensurePtyOpen(leafId, s);
   }
+}
+
+// Open the PTY for a session if one isn't already open/opening. On Windows a
+// stale restored cwd can make the first spawn fail; we then retry once with no
+// cwd so the backend falls back to the home directory.
+function ensurePtyOpen(leafId: number, s: Session): void {
+  if (s.pty || s.ptyOpening || s.shellExited) return;
+  console.debug(`[terax] opening PTY leaf=${leafId} cwd=${s.initialCwd ?? "(none)"}`);
+  s.ptyOpening = true;
+  openPtyForSession(leafId, s, s.initialCwd)
+    .then((pty) => {
+      console.debug(`[terax] PTY opened leaf=${leafId} id=${pty.id}`);
+      s.ptyOpening = false;
+      if (s.disposed) {
+        pty.close();
+        return;
+      }
+      s.pty = pty;
+      if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
+    })
+    .catch((e) => {
+      s.ptyOpening = false;
+      if (s.initialCwd) {
+        // The stored cwd (e.g. from a restored history session) is no longer
+        // accessible. Retry without it so the backend falls back to home dir.
+        console.warn("[terax] openPty failed for cwd, retrying without cwd:", e);
+        s.ptyOpening = true;
+        openPtyForSession(leafId, s, undefined)
+          .then((pty) => {
+            console.debug(`[terax] PTY opened (fallback cwd) leaf=${leafId} id=${pty.id}`);
+            s.ptyOpening = false;
+            if (s.disposed) { pty.close(); return; }
+            s.pty = pty;
+            if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
+          })
+          .catch((e2) => {
+            s.ptyOpening = false;
+            console.error("[terax] openPty retry failed:", e2);
+          });
+      } else {
+        console.error("[terax] openPty failed:", e);
+      }
+    });
 }
 
 function detachSession(leafId: number): void {
@@ -551,6 +563,8 @@ export function useTerminalSession({
     s.focusedNow = focused;
     if (visible) {
       if (s.container && !s.hasSlot) bindLeafToSlot(leafId, s);
+      // First time this tab is shown — spawn its deferred PTY now.
+      if (s.container) ensurePtyOpen(leafId, s);
       setSlotFocused(leafId, focused);
       if (focused) focusSlot(leafId);
     } else if (s.hasSlot) {
