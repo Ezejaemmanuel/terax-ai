@@ -65,9 +65,67 @@ impl Drop for Session {
 #[cfg(windows)]
 static CONPTY_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
+// Upper bound on how long a single session teardown may hold
+// CONPTY_LIFECYCLE_LOCK. On Windows < 11 24H2, ClosePseudoConsole (called from
+// the master's Drop) waits indefinitely when the console can't drain. The
+// PSEUDOCONSOLE_INHERIT_CURSOR flag portable-pty passes makes this worse: it is
+// a known, unfixed ConPTY deadlock (microsoft/terminal #17688). A normal close
+// finishes in a few ms; if one wedges past this deadline we release the lock so
+// it can never freeze every future pty_open, at the cost of leaking one
+// conhost. See `drop_session`.
+#[cfg(windows)]
+const CONPTY_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+// Wait until `done.0` is set true or `timeout` elapses. Returns whether it
+// completed. Kept separate from `drop_session` so the bounded-wait invariant is
+// testable without a live ConPTY.
+#[cfg(any(windows, test))]
+fn wait_until_done(done: &(Mutex<bool>, Condvar), timeout: Duration) -> bool {
+    let (m, cv) = done;
+    let start = Instant::now();
+    let mut finished = m.lock().unwrap();
+    while !*finished {
+        let remaining = match timeout.checked_sub(start.elapsed()) {
+            Some(r) if !r.is_zero() => r,
+            _ => return false,
+        };
+        let (g, to) = cv.wait_timeout(finished, remaining).unwrap();
+        finished = g;
+        if to.timed_out() && !*finished {
+            return false;
+        }
+    }
+    true
+}
+
 pub(super) fn drop_session(session: Arc<Session>) {
     #[cfg(windows)]
-    let _guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap();
+    {
+        // Hold the lifecycle lock so ClosePseudoConsole can't overlap a
+        // concurrent CreatePseudoConsole (issue #356) but never indefinitely:
+        // run the blocking drop on its own thread and release the lock once it
+        // finishes or CONPTY_CLOSE_TIMEOUT passes. A wedged close then costs one
+        // leaked conhost instead of freezing all future terminal spawns.
+        let _guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap();
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done_bg = done.clone();
+        thread::Builder::new()
+            .name("terax-pty-conpty-close".into())
+            .spawn(move || {
+                drop(session);
+                let (m, cv) = &*done_bg;
+                *m.lock().unwrap() = true;
+                cv.notify_all();
+            })
+            .expect("spawn conpty close thread");
+        if !wait_until_done(&done, CONPTY_CLOSE_TIMEOUT) {
+            log::warn!(
+                "ConPTY close exceeded {}s; releasing lifecycle lock (one conhost may leak)",
+                CONPTY_CLOSE_TIMEOUT.as_secs()
+            );
+        }
+    }
+    #[cfg(not(windows))]
     drop(session);
 }
 
@@ -299,6 +357,36 @@ pub fn spawn(
         .expect("spawn pty waiter thread");
 
     Ok((session, size))
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn returns_true_when_signaled_before_timeout() {
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let bg = done.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            let (m, cv) = &*bg;
+            *m.lock().unwrap() = true;
+            cv.notify_all();
+        });
+        assert!(wait_until_done(&done, Duration::from_secs(5)));
+    }
+
+    // The freeze fix hinges on this: a teardown that never signals must not
+    // hold the caller (and thus CONPTY_LIFECYCLE_LOCK) past the timeout.
+    #[test]
+    fn returns_false_and_stays_bounded_when_never_signaled() {
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let start = Instant::now();
+        assert!(!wait_until_done(&done, Duration::from_millis(100)));
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_millis(80), "returned too early: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "exceeded timeout: {elapsed:?}");
+    }
 }
 
 #[cfg(all(test, unix))]
