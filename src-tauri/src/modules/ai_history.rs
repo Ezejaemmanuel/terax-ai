@@ -2,7 +2,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
@@ -486,7 +486,6 @@ fn extract_changed_files_from_jsonl(jsonl_path: &Path) -> Vec<String> {
         Err(_) => return vec![],
     };
 
-    const FILE_TOOLS: &[&str] = &["Edit", "Write", "Create", "MultiEdit", "NotebookEdit"];
     let mut files: HashSet<String> = HashSet::new();
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
@@ -619,4 +618,348 @@ pub async fn session_file_diff(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ── Session changes with file-history baseline ───────────────────────────────
+//
+// Claude Code records a `file-history-snapshot` event before it edits a file,
+// stashing the *pre-edit* content under ~/.claude/file-history/<session>/<hash>@vN.
+// The lowest version (@v1) is the original; a `null` backupFileName at the
+// lowest version means the file was created during the session (empty baseline).
+// We diff that baseline against the current on-disk content — so the changes a
+// conversation made stay visible even after the user commits them (unlike a
+// plain `git diff HEAD`, which goes blank once committed).
+
+#[derive(Serialize, Clone)]
+pub struct SessionFileChange {
+    pub path: String, // absolute path of the changed file
+    pub diff: String, // unified diff (baseline -> current) with clean headers
+    pub additions: u32,
+    pub deletions: u32,
+    pub status: String, // "added" | "deleted" | "modified" | "unchanged"
+}
+
+const FILE_TOOLS: &[&str] = &["Edit", "Write", "Create", "MultiEdit", "NotebookEdit"];
+
+// Case/separator-insensitive key for de-duplicating paths across the two
+// sources (relative backup keys vs absolute tool_use paths) on Windows.
+fn norm_key(p: &str) -> String {
+    p.replace('\\', "/").to_lowercase()
+}
+
+// Resolve a (possibly relative, backslash-separated) backup key to an absolute path.
+fn join_abs(cwd: &str, rel: &str) -> String {
+    let p = Path::new(rel);
+    let drive_prefixed = rel.as_bytes().get(1) == Some(&b':');
+    if p.is_absolute() || rel.starts_with('/') || drive_prefixed {
+        rel.to_string()
+    } else {
+        PathBuf::from(cwd).join(rel).to_string_lossy().into_owned()
+    }
+}
+
+// Path relative to cwd (forward slashes) for clean diff headers / git pathspecs.
+fn rel_label(abs: &str, cwd: &str) -> String {
+    let cwd_n = cwd.replace('\\', "/");
+    let abs_n = abs.replace('\\', "/");
+    let prefix = format!("{}/", cwd_n.trim_end_matches('/'));
+    abs_n.strip_prefix(&prefix).unwrap_or(&abs_n).to_string()
+}
+
+// Read the original pre-edit content from Claude's file-history store.
+fn read_backup(session_id: &str, backup_name: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let p = home
+        .join(".claude")
+        .join("file-history")
+        .join(session_id)
+        .join(backup_name);
+    fs::read_to_string(p).ok()
+}
+
+// Fallback baseline for sessions with no file-history record (older Claude):
+// the file's content at HEAD. Best-effort — empty string if unavailable.
+fn git_head_content(cwd: &str, abs_path: &str) -> String {
+    let rel = rel_label(abs_path, cwd);
+    // strip_prefix failed (path outside cwd) — can't form a HEAD pathspec.
+    if rel == abs_path.replace('\\', "/") {
+        return String::new();
+    }
+    git_output_with_timeout(&["-C", cwd, "show", &format!("HEAD:{rel}")], GIT_TIMEOUT_SECS)
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+// Produce a unified diff (with clean a/<rel> b/<rel> headers) plus +/- counts.
+// Both sides are CRLF-normalized first so cross-platform line endings don't
+// produce a whole-file diff. Uses `git diff --no-index` on temp files.
+fn unified_diff(baseline: &str, current: &str, rel_label: &str) -> (String, u32, u32) {
+    let b = baseline.replace("\r\n", "\n");
+    let c = current.replace("\r\n", "\n");
+    if b == c {
+        return (String::new(), 0, 0);
+    }
+
+    let write_tmp = |s: &str| -> Option<tempfile::NamedTempFile> {
+        let mut f = tempfile::NamedTempFile::new().ok()?;
+        f.write_all(s.as_bytes()).ok()?;
+        f.flush().ok()?;
+        Some(f)
+    };
+    let (Some(tb), Some(tc)) = (write_tmp(&b), write_tmp(&c)) else {
+        return (String::new(), 0, 0);
+    };
+    let base_path = tb.path().to_string_lossy().into_owned();
+    let cur_path = tc.path().to_string_lossy().into_owned();
+
+    // `git diff --no-index` exits 1 when the files differ — that's success here.
+    let out = match git_output_with_timeout(
+        &["diff", "--no-index", "--unified=3", "--", &base_path, &cur_path],
+        GIT_TIMEOUT_SECS,
+    ) {
+        Ok(o) => o,
+        Err(_) => return (String::new(), 0, 0),
+    };
+    let raw = String::from_utf8_lossy(&out.stdout);
+
+    let added = b.is_empty();
+    let deleted = c.is_empty();
+    let mut adds = 0u32;
+    let mut dels = 0u32;
+    let mut hdr_minus = false;
+    let mut hdr_plus = false;
+    let mut lines_out: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        if line.starts_with("diff --git") {
+            lines_out.push(format!("diff --git a/{rel_label} b/{rel_label}"));
+            continue;
+        }
+        // Drop the temp-file `index <oid>..<oid>` line that precedes the headers.
+        if !hdr_minus && line.starts_with("index ") {
+            continue;
+        }
+        if !hdr_minus && line.starts_with("--- ") {
+            hdr_minus = true;
+            lines_out.push(if added {
+                "--- /dev/null".to_string()
+            } else {
+                format!("--- a/{rel_label}")
+            });
+            continue;
+        }
+        if !hdr_plus && line.starts_with("+++ ") {
+            hdr_plus = true;
+            lines_out.push(if deleted {
+                "+++ /dev/null".to_string()
+            } else {
+                format!("+++ b/{rel_label}")
+            });
+            continue;
+        }
+        // Body: count by leading byte (headers already consumed above).
+        match line.as_bytes().first().copied() {
+            Some(b'+') => adds += 1,
+            Some(b'-') => dels += 1,
+            _ => {}
+        }
+        lines_out.push(line.to_string());
+    }
+
+    let mut diff = lines_out.join("\n");
+    if !diff.is_empty() {
+        diff.push('\n');
+    }
+    if diff.len() > MAX_DIFF_BYTES {
+        diff.truncate(MAX_DIFF_BYTES);
+        diff.push_str("\n\\ Diff truncated (> 2 MB)\n");
+    }
+    (diff, adds, dels)
+}
+
+fn collect_session_changes(jsonl_path: &Path, cwd: &str) -> Vec<SessionFileChange> {
+    let session_id = jsonl_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let content = match fs::read_to_string(jsonl_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    // norm key -> (min version, Option<backup file name>)  (None => created)
+    let mut backups: HashMap<String, (i64, Option<String>)> = HashMap::new();
+    // norm key -> display absolute path
+    let mut disp: HashMap<String, String> = HashMap::new();
+    // norm keys touched via Edit/Write/etc. tool_use
+    let mut touched: HashSet<String> = HashSet::new();
+
+    for line in content.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("file-history-snapshot") => {
+                if let Some(tb) = v
+                    .pointer("/snapshot/trackedFileBackups")
+                    .and_then(|x| x.as_object())
+                {
+                    for (rel, info) in tb {
+                        let abs = join_abs(cwd, rel);
+                        let key = norm_key(&abs);
+                        let ver = info.get("version").and_then(|x| x.as_i64()).unwrap_or(1);
+                        let name = info
+                            .get("backupFileName")
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string());
+                        disp.entry(key.clone()).or_insert_with(|| abs.clone());
+                        // Keep the lowest-version backup (the pre-session original).
+                        let slot = backups.entry(key).or_insert((ver, name.clone()));
+                        if ver < slot.0 {
+                            *slot = (ver, name);
+                        }
+                    }
+                }
+            }
+            Some("assistant") => {
+                if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+                    for item in arr {
+                        if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                            continue;
+                        }
+                        let nm = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        if !FILE_TOOLS.contains(&nm) {
+                            continue;
+                        }
+                        let fp = item
+                            .pointer("/input/file_path")
+                            .or_else(|| item.pointer("/input/notebook_path"))
+                            .and_then(|f| f.as_str());
+                        if let Some(fp) = fp {
+                            let key = norm_key(fp);
+                            disp.entry(key.clone()).or_insert_with(|| fp.to_string());
+                            touched.insert(key);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut keys: HashSet<String> = backups.keys().cloned().collect();
+    keys.extend(touched.iter().cloned());
+
+    let mut out: Vec<SessionFileChange> = Vec::new();
+    for key in keys {
+        let abs = disp.get(&key).cloned().unwrap_or_else(|| key.clone());
+        let baseline = match backups.get(&key) {
+            Some((_, Some(name))) => read_backup(&session_id, name).unwrap_or_default(),
+            Some((_, None)) => String::new(), // created during the session
+            None => git_head_content(cwd, &abs), // tool_use only (older Claude) fallback
+        };
+        let current = fs::read_to_string(&abs).unwrap_or_default();
+
+        let baseline_empty = baseline.replace("\r\n", "\n").is_empty();
+        let current_empty = current.replace("\r\n", "\n").is_empty();
+        let (diff, adds, dels) = unified_diff(&baseline, &current, &rel_label(&abs, cwd));
+        let status = if baseline_empty && !current_empty {
+            "added"
+        } else if !baseline_empty && current_empty {
+            "deleted"
+        } else if adds == 0 && dels == 0 {
+            "unchanged"
+        } else {
+            "modified"
+        }
+        .to_string();
+
+        out.push(SessionFileChange {
+            path: abs,
+            diff,
+            additions: adds,
+            deletions: dels,
+            status,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// Return every file a Claude session changed, each with a unified diff
+/// (computed against the file-history baseline) and +/- line counts.
+#[tauri::command]
+pub async fn session_changes(jsonl_path: String, cwd: String) -> Vec<SessionFileChange> {
+    tokio::task::spawn_blocking(move || {
+        let path = Path::new(&jsonl_path);
+        if !is_safe_claude_jsonl_path(path) {
+            return vec![];
+        }
+        collect_session_changes(path, &cwd)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod session_changes_tests {
+    use super::{join_abs, norm_key, rel_label, unified_diff};
+
+    #[test]
+    fn norm_key_lowercases_and_unifies_separators() {
+        assert_eq!(
+            norm_key(r"C:\Users\Dev\Src\App.tsx"),
+            "c:/users/dev/src/app.tsx"
+        );
+    }
+
+    #[test]
+    fn rel_label_strips_cwd_prefix() {
+        assert_eq!(
+            rel_label(r"C:\proj\src\a.ts", r"C:\proj"),
+            "src/a.ts"
+        );
+        // Path outside cwd falls back to the (slash-normalized) absolute path.
+        assert_eq!(rel_label(r"D:\other\x.ts", r"C:\proj"), "D:/other/x.ts");
+    }
+
+    #[test]
+    fn join_abs_resolves_relative_backup_keys() {
+        assert_eq!(
+            join_abs(r"C:\proj", r"src\a.ts").replace('\\', "/"),
+            "C:/proj/src/a.ts"
+        );
+        // Already-absolute (drive-prefixed) keys pass through unchanged.
+        assert_eq!(join_abs(r"C:\proj", r"C:\elsewhere\b.ts"), r"C:\elsewhere\b.ts");
+    }
+
+    #[test]
+    fn unified_diff_counts_and_rewrites_headers() {
+        let (diff, adds, dels) =
+            unified_diff("alpha\nbeta\ngamma\n", "alpha\nBETA\ngamma\n", "foo.txt");
+        assert_eq!(adds, 1);
+        assert_eq!(dels, 1);
+        assert!(diff.contains("--- a/foo.txt"), "diff was: {diff}");
+        assert!(diff.contains("+++ b/foo.txt"), "diff was: {diff}");
+        // Temp file paths must not leak into the rewritten headers.
+        assert!(!diff.contains(".tmp"), "diff leaked temp path: {diff}");
+    }
+
+    #[test]
+    fn unified_diff_treats_empty_baseline_as_addition() {
+        let (diff, adds, dels) = unified_diff("", "one\ntwo\n", "new.txt");
+        assert_eq!(adds, 2);
+        assert_eq!(dels, 0);
+        assert!(diff.contains("--- /dev/null"), "diff was: {diff}");
+        assert!(diff.contains("+++ b/new.txt"), "diff was: {diff}");
+    }
+
+    #[test]
+    fn unified_diff_identical_content_is_empty() {
+        let (diff, adds, dels) = unified_diff("same\n", "same\n", "x.txt");
+        assert!(diff.is_empty());
+        assert_eq!((adds, dels), (0, 0));
+    }
 }

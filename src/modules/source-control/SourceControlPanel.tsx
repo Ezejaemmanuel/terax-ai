@@ -34,6 +34,7 @@ import {
   FolderGitTwoIcon,
   FolderTreeIcon,
   GitBranchIcon,
+  LinkSquare02Icon,
   Refresh01Icon,
   RemoveSquareIcon,
 } from "@hugeicons/core-free-icons";
@@ -49,6 +50,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { joinRepoPath } from "@/modules/explorer/lib/gitDecoration";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
   useSourceControlPanel,
@@ -67,6 +69,8 @@ type Props = {
     originalPath: string | null;
     title?: string;
   }) => void;
+  /** Open the actual file (not the diff) as an editor tab. */
+  onOpenFile?: (absPath: string) => void;
 };
 
 const SOURCE_CONTROL_TOOLTIP_CLASS =
@@ -190,6 +194,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   sourceControl,
   onOpenGitGraph,
   onOpenDiff,
+  onOpenFile,
 }: Props) {
   const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
   const refreshAnimationRef = useRef<number | null>(null);
@@ -980,6 +985,8 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                             actionBusy={scm.actionBusy}
                             headerCheckState={scm.headerCheckState}
                             viewMode={viewMode}
+                            repoRoot={scm.status?.repoRoot ?? ""}
+                            onOpenFile={onOpenFile}
                             onFocusRow={setFocusedRowKey}
                             onToggleAll={scm.toggleAll}
                             onToggleViewMode={() => {
@@ -1087,6 +1094,8 @@ type RowRendererProps = {
   actionBusy: string | null;
   headerCheckState: CheckState;
   viewMode: ViewMode;
+  repoRoot: string;
+  onOpenFile?: (absPath: string) => void;
   onFocusRow: (key: string | null) => void;
   onToggleAll: () => Promise<void> | void;
   onToggleViewMode: () => void;
@@ -1307,6 +1316,8 @@ const EntryRow = memo(function EntryRow({
   selectedPath,
   actionBusy,
   viewMode,
+  repoRoot,
+  onOpenFile,
   onFocusRow,
   onSelectFile,
   onToggleStageFile,
@@ -1320,6 +1331,8 @@ const EntryRow = memo(function EntryRow({
   const iconUrl = fileIconUrl(fileName);
   const pathLabel = viewMode === "tree" ? null : entryPathLabel(entry);
   const showDiscard = entry.unstaged;
+  // A deleted file has nothing to open; everything else can be opened directly.
+  const canOpenFile = !!onOpenFile && !!repoRoot && entry.statusCode !== "D";
   const isStageBusy =
     actionBusy === `stage:${entry.path}` ||
     actionBusy === `unstage:${entry.path}`;
@@ -1378,6 +1391,22 @@ const EntryRow = memo(function EntryRow({
         </div>
       </button>
 
+      {canOpenFile ? (
+        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-data-[focused=true]:opacity-100 group-data-[selected=true]:opacity-100">
+          <IconActionButton
+            label="Open file"
+            side="top"
+            onClick={() => onOpenFile?.(joinRepoPath(repoRoot, entry.path))}
+          >
+            <HugeiconsIcon
+              icon={LinkSquare02Icon}
+              size={11}
+              strokeWidth={1.9}
+            />
+          </IconActionButton>
+        </div>
+      ) : null}
+
       <span
         className={cn(
           "shrink-0 w-3.5 text-center text-[11px] font-semibold leading-none tabular-nums",
@@ -1389,7 +1418,7 @@ const EntryRow = memo(function EntryRow({
       </span>
 
       {showDiscard ? (
-        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 data-[focused=true]:opacity-100 data-[selected=true]:opacity-100">
+        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-data-[focused=true]:opacity-100 group-data-[selected=true]:opacity-100">
           <IconActionButton
             label={`Discard ${entry.path}`}
             disabled={disabled}

@@ -1,94 +1,111 @@
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   ArrowLeft01Icon,
   File01Icon,
-  GitBranchIcon,
   Loading03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiSessionDiffTab } from "@/modules/tabs/lib/useTabs";
 
-type GitRepoInfo = { repoRoot: string; branch: string; upstream: string | null; isDetached: boolean };
+type SessionFileChange = {
+  path: string;
+  diff: string;
+  additions: number;
+  deletions: number;
+  status: "added" | "deleted" | "modified" | "unchanged";
+};
 
 type Props = {
   tab: AiSessionDiffTab;
   onClose: () => void;
-  onOpenFileDiff: (input: {
-    path: string;
-    repoRoot: string;
-    mode: "+" | "-";
-    originalPath: null;
-    title?: string;
-  }) => void;
 };
 
-
-function toRelativePath(absPath: string, repoRoot: string): string {
-  const norm = (p: string) => p.replace(/\\/g, "/");
-  const root = norm(repoRoot).replace(/\/$/, "");
-  const abs = norm(absPath);
-  const windowsRoot = /^[A-Za-z]:\//.test(root);
-  const cmpRoot = windowsRoot ? root.toLowerCase() : root;
-  const cmpAbs = windowsRoot ? abs.toLowerCase() : abs;
-  return cmpAbs.startsWith(cmpRoot + "/") ? abs.slice(root.length + 1) : abs;
+function splitPath(p: string): { name: string; dir: string } {
+  const parts = p.replace(/\\/g, "/").split("/");
+  const name = parts.pop() ?? p;
+  return { name, dir: parts.join("/") };
 }
 
 export const AiSessionDiffPane = memo(function AiSessionDiffPane({
   tab,
   onClose,
-  onOpenFileDiff,
 }: Props) {
-  const [files, setFiles] = useState<string[]>([]);
-  const [filesLoading, setFilesLoading] = useState(true);
-  const [hasGit, setHasGit] = useState<boolean | null>(null);
-  const [initializingGit, setInitializingGit] = useState(false);
-  const [repoRoot, setRepoRoot] = useState<string | null>(null);
-
+  const [changes, setChanges] = useState<SessionFileChange[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string | null>(null);
   const cancelRef = useRef(false);
+
+  const load = useCallback(async () => {
+    const res = await invoke<SessionFileChange[]>("session_changes", {
+      jsonlPath: tab.jsonlPath,
+      cwd: tab.cwd,
+    });
+    if (cancelRef.current) return;
+    setChanges(res);
+    // Keep the current selection if it still exists, otherwise pick the first.
+    setSelected((prev) =>
+      prev && res.some((c) => c.path === prev)
+        ? prev
+        : (res[0]?.path ?? null),
+    );
+  }, [tab.jsonlPath, tab.cwd]);
 
   useEffect(() => {
     cancelRef.current = false;
-    setFilesLoading(true);
-    setFiles([]);
-    setHasGit(null);
-    setRepoRoot(null);
-    Promise.all([
-      invoke<string[]>("session_changed_files", { jsonlPath: tab.jsonlPath }),
-      invoke<boolean>("session_check_git", { cwd: tab.cwd }),
-      invoke<GitRepoInfo | null>("git_resolve_repo", { cwd: tab.cwd }).catch(() => null),
-    ])
-      .then(([changedFiles, gitOk, repoInfo]) => {
-        if (cancelRef.current) return; // stale — a newer tab is now active
-        setFiles(changedFiles);
-        setHasGit(gitOk);
-        setRepoRoot(repoInfo?.repoRoot ?? null);
-        if (changedFiles.length > 0 && gitOk && repoInfo?.repoRoot) {
-          const relPath = toRelativePath(changedFiles[0], repoInfo.repoRoot);
-          onOpenFileDiff({
-            path: relPath,
-            repoRoot: repoInfo.repoRoot,
-            mode: "+",
-            originalPath: null,
-            title: changedFiles[0].split(/[\\/]/).pop() ?? changedFiles[0],
-          });
-        }
+    setLoading(true);
+    setChanges([]);
+    setSelected(null);
+    load()
+      .catch(() => {
+        if (!cancelRef.current) setChanges([]);
       })
-      .catch(() => { if (!cancelRef.current) setHasGit(false); })
-      .finally(() => { if (!cancelRef.current) setFilesLoading(false); });
-    return () => { cancelRef.current = true; };
-  }, [tab.jsonlPath, tab.cwd]);
+      .finally(() => {
+        if (!cancelRef.current) setLoading(false);
+      });
+    return () => {
+      cancelRef.current = true;
+    };
+  }, [load]);
 
-  const handleInitGit = useCallback(async () => {
-    setInitializingGit(true);
-    try {
-      await invoke("session_git_init", { cwd: tab.cwd });
-      setHasGit(true);
-    } finally {
-      setInitializingGit(false);
-    }
-  }, [tab.cwd]);
+  // Live-refresh while the session is still running (new edits land in the JSONL).
+  useEffect(() => {
+    const win = getCurrentWebviewWindow();
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    win
+      .listen<string>("ai:history_changed", (event) => {
+        if (event.payload === "claude") void load();
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [load]);
+
+  const selectedChange = useMemo(
+    () => changes.find((c) => c.path === selected) ?? null,
+    [changes, selected],
+  );
+
+  const totals = useMemo(
+    () =>
+      changes.reduce(
+        (acc, c) => {
+          acc.add += c.additions;
+          acc.del += c.deletions;
+          return acc;
+        },
+        { add: 0, del: 0 },
+      ),
+    [changes],
+  );
 
   const shortPath = tab.cwd.replace(/\\/g, "/").split("/").slice(-2).join("/");
 
@@ -108,79 +125,187 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
           <p className="truncate text-[13px] font-semibold text-foreground/90">
             {tab.title}
           </p>
-          <p className="truncate text-[10.5px] text-muted-foreground/60">{shortPath}</p>
+          <p className="truncate text-[10.5px] text-muted-foreground/60">
+            {shortPath}
+          </p>
         </div>
-        <p className="shrink-0 text-[10.5px] text-muted-foreground/60">
-          {!filesLoading && files.length > 0
-            ? `${files.length} file${files.length === 1 ? "" : "s"} changed`
-            : ""}
-        </p>
+        {!loading && changes.length > 0 && (
+          <div className="flex shrink-0 items-center gap-2 text-[10.5px]">
+            <span className="text-muted-foreground/60">
+              {changes.length} {changes.length === 1 ? "file" : "files"}
+            </span>
+            <span className="font-mono text-emerald-400">+{totals.add}</span>
+            <span className="font-mono text-red-400">−{totals.del}</span>
+          </div>
+        )}
       </div>
 
       {/* Body */}
-      {filesLoading ? (
+      {loading ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-[12px] text-muted-foreground">
-          <HugeiconsIcon icon={Loading03Icon} size={14} strokeWidth={1.75} className="animate-spin" />
+          <HugeiconsIcon
+            icon={Loading03Icon}
+            size={14}
+            strokeWidth={1.75}
+            className="animate-spin"
+          />
           Loading changed files…
         </div>
-      ) : hasGit === false ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4">
-          <HugeiconsIcon icon={GitBranchIcon} size={36} strokeWidth={1.4} className="text-muted-foreground/30" />
-          <p className="text-[12px] text-muted-foreground">No git repository found.</p>
-          <button
-            type="button"
-            onClick={handleInitGit}
-            disabled={initializingGit}
-            className={cn(
-              "rounded-md bg-primary px-4 py-1.5 text-[12px] font-medium text-primary-foreground",
-              initializingGit && "cursor-not-allowed opacity-60",
-            )}
-          >
-            {initializingGit ? "Initializing…" : "Initialize git repository"}
-          </button>
-        </div>
-      ) : files.length === 0 ? (
+      ) : changes.length === 0 ? (
         <div className="flex flex-1 items-center justify-center text-[12px] text-muted-foreground">
           No file changes recorded for this session.
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <p className="px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/70">
-            {files.length} {files.length === 1 ? "file" : "files"} changed — click to open diff
-          </p>
-          {files.map((fp) => {
-            const name = fp.replace(/\\/g, "/").split("/").pop() ?? fp;
-            const dir = fp.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
-            return (
-              <button
-                key={fp}
-                type="button"
-                disabled={!repoRoot}
-                onClick={() => {
-                  if (repoRoot) {
-                    onOpenFileDiff({
-                      path: toRelativePath(fp, repoRoot),
-                      repoRoot,
-                      mode: "+",
-                      originalPath: null,
-                      title: name,
-                    });
-                  }
-                }}
-                className="flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-foreground/[0.04] disabled:opacity-50"
-              >
-                <HugeiconsIcon icon={File01Icon} size={13} strokeWidth={1.75} className="shrink-0 text-muted-foreground/60" />
-                <div className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-medium text-foreground/90">{name}</span>
-                  {dir && (
-                    <span className="block truncate text-[10.5px] text-muted-foreground/55">{dir}</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
+        <div className="flex min-h-0 flex-1">
+          {/* File list sidebar */}
+          <div className="w-64 shrink-0 overflow-y-auto border-r border-border/50 [scrollbar-gutter:stable]">
+            {changes.map((c) => (
+              <FileRow
+                key={c.path}
+                change={c}
+                active={c.path === selected}
+                onSelect={() => setSelected(c.path)}
+              />
+            ))}
+          </div>
+
+          {/* Inline diff */}
+          <div className="min-w-0 flex-1 overflow-auto bg-background/60">
+            {selectedChange ? (
+              selectedChange.diff.trim() === "" ? (
+                <p className="px-4 py-4 text-[11px] text-muted-foreground/60">
+                  No net changes for this file in the session.
+                </p>
+              ) : (
+                <DiffView diff={selectedChange.diff} />
+              )
+            ) : (
+              <p className="px-4 py-4 text-[11px] text-muted-foreground/60">
+                Select a file to view its diff.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 });
+
+// ── FileRow (sidebar entry) ──────────────────────────────────────────────────
+
+const STATUS_ACCENT: Record<SessionFileChange["status"], string> = {
+  added: "bg-emerald-500",
+  deleted: "bg-red-500",
+  modified: "bg-amber-500",
+  unchanged: "bg-muted-foreground/30",
+};
+
+const FileRow = memo(function FileRow({
+  change,
+  active,
+  onSelect,
+}: {
+  change: SessionFileChange;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const { name, dir } = splitPath(change.path);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={change.path}
+      className={cn(
+        "flex w-full items-center gap-2 border-l-2 px-3 py-1.5 text-left transition-colors",
+        active
+          ? "border-primary bg-foreground/[0.06]"
+          : "border-transparent hover:bg-foreground/[0.04]",
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          STATUS_ACCENT[change.status],
+        )}
+        aria-hidden
+      />
+      <HugeiconsIcon
+        icon={File01Icon}
+        size={12}
+        strokeWidth={1.75}
+        className="shrink-0 text-muted-foreground/60"
+      />
+      <div className="min-w-0 flex-1">
+        <span className="block truncate text-[11.5px] text-foreground/90">
+          {name}
+        </span>
+        {dir && (
+          <span className="block truncate text-[10px] text-muted-foreground/55">
+            {dir}
+          </span>
+        )}
+      </div>
+      <span className="shrink-0 font-mono text-[9.5px] leading-tight">
+        {change.additions > 0 && (
+          <span className="text-emerald-400">+{change.additions}</span>
+        )}
+        {change.additions > 0 && change.deletions > 0 && " "}
+        {change.deletions > 0 && (
+          <span className="text-red-400">−{change.deletions}</span>
+        )}
+      </span>
+    </button>
+  );
+});
+
+// ── DiffView ─────────────────────────────────────────────────────────────────
+
+function DiffView({ diff }: { diff: string }) {
+  const lines = diff.split("\n");
+  return (
+    <pre className="min-w-full p-2 font-mono text-[11px] leading-relaxed">
+      {lines.map((line, i) => {
+        if (line.startsWith("+++") || line.startsWith("---")) {
+          return (
+            <span key={i} className="block text-muted-foreground/70">
+              {line}
+            </span>
+          );
+        }
+        if (line.startsWith("diff --git")) {
+          return (
+            <span key={i} className="block text-muted-foreground/50">
+              {line}
+            </span>
+          );
+        }
+        if (line.startsWith("@@")) {
+          return (
+            <span key={i} className="block text-blue-400/80">
+              {line}
+            </span>
+          );
+        }
+        if (line.startsWith("+")) {
+          return (
+            <span key={i} className="block bg-emerald-500/10 text-emerald-400">
+              {line}
+            </span>
+          );
+        }
+        if (line.startsWith("-")) {
+          return (
+            <span key={i} className="block bg-red-500/10 text-red-400">
+              {line}
+            </span>
+          );
+        }
+        return (
+          <span key={i} className="block text-foreground/70">
+            {line || " "}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}

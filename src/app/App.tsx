@@ -978,8 +978,12 @@ export default function App() {
   const sourceControlActive =
     hasOpenGitTab || sidebarView === "source-control";
   // Stable per-session path so switching tabs / cd-ing in a shell does NOT
-  // re-fire git IPC for the badge. The active panel resolves the current
-  // context path on its own when the user actually opens git.
+  // re-fire git IPC for the badge or the explorer's git decorations. The
+  // explorer reads decorations from this same instance; in the common
+  // single-repo workspace the badge path resolves the same repo as the
+  // explorer root, and the file-watcher refresh keeps decorations live without
+  // spawning git on every cd. The active panel resolves the current context
+  // path on its own when the user actually opens git.
   const badgeContextPath = workspaceFallbackPath;
   const sourceControlPath = sourceControlActive
     ? sourceControlContextPath
@@ -1453,7 +1457,6 @@ export default function App() {
           <AiSessionDiffPane
             tab={activeTab}
             onClose={() => closeTab(activeTab.id)}
-            onOpenFileDiff={openGitDiffTab}
           />
         </div>
       )}
@@ -1531,6 +1534,7 @@ export default function App() {
                       <FileExplorer
                         ref={explorerRef}
                         rootPath={explorerRoot}
+                        sourceControl={sourceControl}
                         onOpenFile={handleOpenFile}
                         onPathRenamed={handlePathRenamed}
                         onPathDeleted={handlePathDeleted}
@@ -1543,6 +1547,7 @@ export default function App() {
                         open
                         sourceControl={sourceControl}
                         onOpenDiff={openGitDiffTab}
+                        onOpenFile={(path) => handleOpenFile(path, true)}
                         onOpenGitGraph={openGitGraphFromContext}
                       />
                     ) : sidebarView === "claude-history" ? (

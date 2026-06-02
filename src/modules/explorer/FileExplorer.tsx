@@ -31,7 +31,9 @@ import { copyToClipboard, revealInFinder } from "./lib/contextActions";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useFileTree } from "./lib/useFileTree";
+import { useGitDecorations } from "./lib/useGitDecorations";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
+import type { SourceControlSummary } from "@/modules/source-control";
 
 export type FileExplorerHandle = {
   focus: () => void;
@@ -40,6 +42,7 @@ export type FileExplorerHandle = {
 
 type Props = {
   rootPath: string | null;
+  sourceControl: SourceControlSummary;
   onOpenFile: (path: string, pin?: boolean) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
@@ -153,6 +156,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
   function FileExplorer(
     {
       rootPath,
+      sourceControl,
       onOpenFile,
       onPathRenamed,
       onPathDeleted,
@@ -163,6 +167,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
     ref,
   ) {
     const tree = useFileTree(rootPath, { onPathRenamed, onPathDeleted });
+    const git = useGitDecorations(sourceControl);
     const [selectedPath, setSelectedPath] = useState<string | null>(null);
     const [isSearchOpen, setIsSearchOpen] = useState(false);
     const [isSearchActive, setIsSearchActive] = useState(false);
@@ -344,6 +349,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
               tree={tree}
               isSelected={selectedPath === row.path}
               isRenaming={row.kind === "rename"}
+              gitStatus={
+                row.kind === "entry" ? git.decorationFor(row.path) : undefined
+              }
               onOpenFile={onOpenFile}
               onSelectPath={setSelectedPath}
               onRevealInTerminal={onRevealInTerminal}
@@ -423,7 +431,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
             variant="ghost"
             size="icon"
             className="size-6 text-muted-foreground hover:text-foreground"
-            onClick={() => tree.refresh(rootPath)}
+            onClick={() => {
+              tree.refresh(rootPath);
+              git.refreshGit();
+            }}
             title="Refresh"
           >
             <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={2} />
@@ -557,7 +568,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
               </ContextMenuItem>
               <ContextMenuItem
                 className={COMPACT_ITEM}
-                onSelect={() => tree.refresh(rootPath)}
+                onSelect={() => {
+                  tree.refresh(rootPath);
+                  git.refreshGit();
+                }}
               >
                 Refresh
               </ContextMenuItem>

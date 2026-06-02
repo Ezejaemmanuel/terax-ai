@@ -15,6 +15,7 @@ import {
   relativePath,
   revealInFinder,
 } from "./lib/contextActions";
+import { colorClassFor, type GitDecoration } from "./lib/gitDecoration";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import type { useFileTree } from "./lib/useFileTree";
@@ -31,6 +32,7 @@ export type EntryRowProps = {
   tree: Tree;
   isSelected: boolean;
   isRenaming: boolean;
+  gitStatus?: GitDecoration;
   onOpenFile: (path: string, pin?: boolean) => void;
   onSelectPath: (path: string) => void;
   onRevealInTerminal?: (path: string) => void;
@@ -53,6 +55,7 @@ function EntryRowImpl(props: EntryRowProps) {
     tree,
     isSelected,
     isRenaming,
+    gitStatus,
     onOpenFile,
     onSelectPath,
     onRevealInTerminal,
@@ -122,7 +125,27 @@ function EntryRowImpl(props: EntryRowProps) {
             ) : (
               <span className="size-4 shrink-0" />
             )}
-            <span className="min-w-0 flex-1 truncate">{name}</span>
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate",
+                // Selection highlight owns the text color for contrast against
+                // the accent background; the badge still carries the git color.
+                gitStatus && !isSelected && colorClassFor(gitStatus.status),
+              )}
+            >
+              {name}
+            </span>
+            {gitStatus ? (
+              <span
+                className={cn(
+                  "shrink-0 pl-1 text-[11px] font-semibold leading-none tabular-nums",
+                  colorClassFor(gitStatus.status),
+                )}
+                aria-hidden
+              >
+                {gitStatus.badge}
+              </span>
+            ) : null}
           </button>
         )}
       </ContextMenuTrigger>

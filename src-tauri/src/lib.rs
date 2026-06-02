@@ -198,6 +198,7 @@ pub fn run() {
             ai_history::session_check_git,
             ai_history::session_git_init,
             ai_history::session_file_diff,
+            ai_history::session_changes,
             open_devtools,
             exit_app,
         ])

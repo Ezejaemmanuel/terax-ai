@@ -12,6 +12,16 @@ export const IS_MAC = PLATFORM === "macos";
 export const IS_LINUX = PLATFORM === "linux";
 export const IS_WINDOWS = PLATFORM === "windows";
 
+/**
+ * Whether the default filesystem is case-insensitive. Windows (NTFS) and the
+ * default macOS volume (APFS/HFS+) are case-insensitive; Linux is case
+ * sensitive. Used to compare paths from different sources (e.g. a workspace cwd
+ * vs git's repo root) that may differ only in case. Not perfect — a
+ * case-sensitive macOS volume or a case-insensitive Linux mount would be
+ * mis-classified — but correct for the overwhelming majority of setups.
+ */
+export const CASE_INSENSITIVE_FS = IS_WINDOWS || IS_MAC;
+
 /** Custom window controls (min/max/close) are rendered by us only on
  * non-macOS platforms — macOS keeps the native traffic lights via the
  * overlay title bar. */
