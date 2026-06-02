@@ -195,6 +195,7 @@ impl AgentDetector {
                 if let Some(agent) = self.match_agent(cmd) {
                     self.armed = true;
                     self.status = Status::Working;
+                    log::info!("[agent] armed via OSC133;C agent={agent}");
                     emit(Transition::Started { agent });
                 }
             }
@@ -210,6 +211,7 @@ impl AgentDetector {
         if !self.armed {
             self.armed = true;
             self.status = Status::Working;
+            log::info!("[agent] armed via OSC777 hook marker");
             emit(Transition::Started { agent: "claude".into() });
         }
     }

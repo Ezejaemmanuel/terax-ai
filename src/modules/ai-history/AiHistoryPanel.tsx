@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { invoke } from "@tauri-apps/api/core";
 import { relativeTime } from "@/lib/relativeTime";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import { writeToSession } from "@/modules/terminal";
@@ -88,7 +89,8 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
   const [openingNewCwd, setOpeningNewCwd] = useState<string | null>(null);
 
   // Module-level store survives sidebar panel switches (component unmounts).
-  const { getTabId, setMapping, clearStaleTabIds } = useSessionTabStore();
+  const { getTabId, setMapping, setTabTitle, clearStaleTabIds } =
+    useSessionTabStore();
   const addFolder = useActiveFolderStore((s) => s.addFolder);
   // Reactive subscription so the effect re-runs if mappings change independently.
   const storeMap = useSessionTabStore((s) => s.map);
@@ -141,8 +143,15 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
 
       setOpeningNewCwd(cwd);
       try {
+        // Ensure agent-status hooks exist before the agent prints anything.
+        if (tool === "claude") {
+          await invoke("agent_enable_claude_hooks").catch(() => {});
+        }
         const tabId = newTab(cwd);
         setActiveId(tabId);
+        // No chat title yet (the agent derives it later) — show the tool name
+        // so the terminal list reads "Claude Code" instead of just the folder.
+        setTabTitle(tabId, tool === "claude" ? "Claude Code" : "Codex");
         const leafId = tabId + 1;
         const command = tool === "claude" ? "claude --permission-mode auto" : "codex";
         await writeWhenReady(leafId, command);
@@ -151,7 +160,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         setOpeningNewCwd(null);
       }
     },
-    [openingNewCwd, newTab, setActiveId, tool, liveStatusForCwd, addFolder, projects],
+    [openingNewCwd, newTab, setActiveId, tool, liveStatusForCwd, addFolder, projects, setTabTitle],
   );
 
   // Memoize status for all projects.
@@ -191,6 +200,9 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
       // No existing tab — open a new one and resume it.
       setOpening(session.id);
       try {
+        if (tool === "claude") {
+          await invoke("agent_enable_claude_hooks").catch(() => {});
+        }
         const cwd = session.cwd || undefined;
         const tabId = newTab(cwd);
         setActiveId(tabId);

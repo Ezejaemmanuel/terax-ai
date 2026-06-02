@@ -58,17 +58,28 @@ function route(
 
 function handleSignal(sig: AgentSignal, ctx: Ctx): void {
   const leafId = leafIdForPty(sig.id);
-  if (leafId === null) return;
+  console.debug("[agent] recv", sig, "→ leafId", leafId);
+  if (leafId === null) {
+    console.debug("[agent] no leaf bound to pty", sig.id, "— signal dropped");
+    return;
+  }
   const store = useAgentStore.getState();
 
   switch (sig.kind) {
     case "started": {
       const info = tabInfo(ctx.tabs, leafId);
-      if (!info) return;
+      if (!info) {
+        console.debug("[agent] started: no tab owns leaf", leafId, "— dropped");
+        return;
+      }
+      console.debug("[agent] start session leaf", leafId, "tab", info.tabId, "agent", sig.agent);
       store.start(leafId, info.tabId, sig.agent ?? "agent");
       return;
     }
     case "working":
+      if (!store.sessions[leafId]) {
+        console.debug("[agent] working: no session for leaf", leafId, "(missed start)");
+      }
       store.setStatus(leafId, "working");
       return;
     case "attention": {

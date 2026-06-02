@@ -4,6 +4,7 @@ type SessionTabState = {
   map: Map<string, number>;        // sessionId → tabId
   tabTitles: Map<number, string>;  // tabId → session title (for terminal list display)
   setMapping: (sessionId: string, tabId: number, sessionTitle: string) => void;
+  setTabTitle: (tabId: number, title: string) => void;
   clearByTabId: (tabId: number) => void;
   clearStaleTabIds: (activeTabIds: Set<number>) => void;
   getTabId: (sessionId: string) => number | undefined;
@@ -23,6 +24,16 @@ export const useSessionTabStore = create<SessionTabState>((set, get) => ({
       const nextTitles = new Map(s.tabTitles);
       nextTitles.set(tabId, sessionTitle);
       return { map: nextMap, tabTitles: nextTitles };
+    }),
+
+  // Title-only update for tabs that have no Claude session id yet (new sessions,
+  // manual launches). Keyed by tabId so the terminal list can show "Claude".
+  setTabTitle: (tabId, title) =>
+    set((s) => {
+      if (s.tabTitles.get(tabId) === title) return s;
+      const nextTitles = new Map(s.tabTitles);
+      nextTitles.set(tabId, title);
+      return { tabTitles: nextTitles };
     }),
 
   clearByTabId: (tabId) =>

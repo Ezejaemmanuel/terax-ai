@@ -102,13 +102,41 @@ pub(super) fn drop_session(session: Arc<Session>) {
     #[cfg(windows)]
     {
         // Hold the lifecycle lock so ClosePseudoConsole can't overlap a
-        // concurrent CreatePseudoConsole (issue #356) but never indefinitely:
-        // run the blocking drop on its own thread and release the lock once it
-        // finishes or CONPTY_CLOSE_TIMEOUT passes. A wedged close then costs one
-        // leaked conhost instead of freezing all future terminal spawns.
+        // concurrent CreatePseudoConsole (issue #356). A healthy close releases
+        // the lock only once it has fully returned, so the next pty_open never
+        // overlaps it. A wedged close is bounded by CONPTY_CLOSE_TIMEOUT and
+        // then abandoned (one leaked conhost) so it can't freeze every future
+        // spawn; the drain below makes that backstop fire only on the OS-side
+        // inherit-cursor hang (microsoft/terminal#17688), not normal closes.
         let _guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap();
+
+        // ClosePseudoConsole (called from the master's Drop inside portable-pty)
+        // sends CTRL_CLOSE_EVENT and may emit a final frame to the conout pipe;
+        // on Windows < 11 24H2 it blocks indefinitely unless that pipe is being
+        // drained. portable-pty closes the HPCON *before* the conout handle and
+        // does no draining itself, so we must: clone a fresh reader and keep
+        // reading it to EOF on a separate thread until the close returns. This
+        // is the pattern Microsoft's ClosePseudoConsole docs require.
+        let _drain = session
+            .master
+            .lock()
+            .ok()
+            .and_then(|m| m.try_clone_reader().ok())
+            .and_then(|mut reader| {
+                thread::Builder::new()
+                    .name("terax-pty-conpty-drain".into())
+                    .spawn(move || {
+                        let mut buf = [0u8; 4096];
+                        // Reads unblock once the close completes and conhost
+                        // exits (EOF), or error out if the handle is torn down.
+                        while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+                    })
+                    .ok()
+            });
+
         let done = Arc::new((Mutex::new(false), Condvar::new()));
         let done_bg = done.clone();
+        let started = Instant::now();
         thread::Builder::new()
             .name("terax-pty-conpty-close".into())
             .spawn(move || {
@@ -118,12 +146,17 @@ pub(super) fn drop_session(session: Arc<Session>) {
                 cv.notify_all();
             })
             .expect("spawn conpty close thread");
-        if !wait_until_done(&done, CONPTY_CLOSE_TIMEOUT) {
+        if wait_until_done(&done, CONPTY_CLOSE_TIMEOUT) {
+            log::debug!("ConPTY close returned in {}ms", started.elapsed().as_millis());
+        } else {
             log::warn!(
                 "ConPTY close exceeded {}s; releasing lifecycle lock (one conhost may leak)",
                 CONPTY_CLOSE_TIMEOUT.as_secs()
             );
         }
+        // The drain thread is detached: it ends on its own when the conout pipe
+        // EOFs after the close returns. If the close wedged it leaks alongside
+        // the conhost, which is the intended cost of the backstop.
     }
     #[cfg(not(windows))]
     drop(session);
@@ -246,7 +279,9 @@ pub fn spawn(
                             log::debug!("pty first byte after {}ms", spawn_at.elapsed().as_millis());
                         }
                         agent_detect.process(&buf[..n], |t| {
-                            let _ = app_reader.emit(AGENT_EVENT, t.into_signal(id));
+                            let sig = t.into_signal(id);
+                            log::info!("[agent] emit id={id} kind={}", sig.kind);
+                            let _ = app_reader.emit(AGENT_EVENT, sig);
                         });
                         filtered.clear();
                         da_filter.process(&buf[..n], &mut filtered, |reply| {

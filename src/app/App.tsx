@@ -73,8 +73,6 @@ import {
   type ShortcutId,
 } from "@/modules/shortcuts";
 import { AiHistoryPanel, AiSessionDiffPane } from "@/modules/ai-history";
-import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
-import { useActiveFolderStore } from "@/modules/terminals/activeFolderStore";
 import { TerminalListPanel } from "@/modules/terminals/TerminalListPanel";
 import { FolderStrip } from "@/modules/terminals/FolderStrip";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
@@ -220,9 +218,6 @@ export default function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
 
-  // Stores used by FolderStrip session callbacks.
-  const { setMapping: setSessionMapping } = useSessionTabStore();
-  const { addFolder } = useActiveFolderStore();
   // Prevents double-click from spawning duplicate terminals via FolderStrip.
   const openingFromFolderRef = useRef(false);
 
@@ -488,6 +483,12 @@ export default function App() {
     void hydrateSessions();
     void useAgentsStore.getState().hydrate();
     void useSnippetsStore.getState().hydrate();
+    // Install the Claude Code hooks once at startup so agent status tracking
+    // works for every launch path (sidebar, FolderStrip, manual `claude`),
+    // not just managed agents. Idempotent + gated on TERAX_TERMINAL.
+    void invoke("agent_enable_claude_hooks")
+      .then(() => console.debug("[agent] claude hooks installed at startup"))
+      .catch((e) => console.debug("[agent] hook install failed", e));
   }, [hydrateSessions]);
 
   useTabSession(tabs, activeId, initFromSession);
@@ -1493,56 +1494,17 @@ export default function App() {
           <FolderStrip
             tabs={tabs}
             activeId={activeId}
+            sidebarView={sidebarView}
             onSetActiveId={setActiveId}
-            onOpenSession={(session) => {
+            onSwitchToFolder={(cwd) => {
               if (openingFromFolderRef.current) return;
               openingFromFolderRef.current = true;
-              void (async () => {
-                try {
-                  const tabId = newTab(session.cwd || undefined);
-                  setActiveId(tabId);
-                  const leafId = tabId + 1;
-                  if (
-                    await writeCommandToSessionWhenReady(
-                      leafId,
-                      `claude --resume ${session.id}`,
-                    )
-                  ) {
-                    setSessionMapping(session.id, tabId, session.title);
-                    addFolder(
-                      session.cwd,
-                      session.cwd.split(/[\\/]/).pop() ?? session.cwd,
-                    );
-                  }
-                } catch (err) {
-                  console.error("[FolderStrip] Failed to resume session:", err);
-                } finally {
-                  openingFromFolderRef.current = false;
-                }
-              })();
-            }}
-            onNewSession={(cwd) => {
-              if (openingFromFolderRef.current) return;
-              openingFromFolderRef.current = true;
-              void (async () => {
-                try {
-                  const tabId = newTab(cwd);
-                  setActiveId(tabId);
-                  const leafId = tabId + 1;
-                  if (
-                    await writeCommandToSessionWhenReady(
-                      leafId,
-                      "claude --permission-mode auto",
-                    )
-                  ) {
-                    addFolder(cwd, cwd.split(/[\\/]/).pop() ?? cwd);
-                  }
-                } catch (err) {
-                  console.error("[FolderStrip] Failed to open new session:", err);
-                } finally {
-                  openingFromFolderRef.current = false;
-                }
-              })();
+              try {
+                const tabId = newTab(cwd);
+                setActiveId(tabId);
+              } finally {
+                openingFromFolderRef.current = false;
+              }
             }}
           />
 

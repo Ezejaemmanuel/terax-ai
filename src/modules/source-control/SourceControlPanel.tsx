@@ -202,7 +202,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       const v = localStorage.getItem("terax.scm.viewMode");
       if (v === "list" || v === "tree") return v;
     } catch { /* ignore */ }
-    return "list";
+    return "tree";
   });
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [collapsedSections, setCollapsedSections] = useState<Set<"staged" | "unstaged">>(new Set());
