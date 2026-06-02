@@ -47,8 +47,7 @@ fn short_name(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     normalized
         .split('/')
-        .filter(|s| !s.is_empty())
-        .next_back()
+        .rfind(|s| !s.is_empty())
         .unwrap_or(path)
         .to_string()
 }
