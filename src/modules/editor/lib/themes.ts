@@ -8,11 +8,13 @@ import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
 import { xcodeDark, xcodeLight } from "@uiw/codemirror-theme-xcode";
 import type { Extension } from "@codemirror/state";
 import type { EditorThemeId } from "@/modules/settings/store";
+import { cursorDarkTheme } from "./themes/cursor-dark";
 
 export const EDITOR_THEME_EXT: Record<EditorThemeId, Extension> = {
   atomone,
   aura,
   copilot,
+  "cursor-dark": cursorDarkTheme,
   "github-dark": githubDark,
   "github-light": githubLight,
   "gruvbox-dark": gruvboxDark,
