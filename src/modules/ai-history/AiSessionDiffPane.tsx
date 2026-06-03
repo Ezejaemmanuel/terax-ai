@@ -1,21 +1,40 @@
 import { cn } from "@/lib/utils";
+import { CASE_INSENSITIVE_FS } from "@/lib/platform";
+import {
+  fileIconUrl,
+  folderIconUrl,
+} from "@/modules/explorer/lib/iconResolver";
+import {
+  basename,
+  dirname,
+  flattenFileTree,
+  statusBadgeClass,
+} from "@/modules/source-control/lib/fileTree";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   ArrowLeft01Icon,
-  File01Icon,
+  ArrowRight01Icon,
+  File02Icon,
+  FolderTreeIcon,
   Loading03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiSessionDiffTab } from "@/modules/tabs/lib/useTabs";
+import { SessionDiffEditor } from "./SessionDiffEditor";
+
+type SessionStatus = "added" | "deleted" | "modified" | "unchanged";
 
 type SessionFileChange = {
   path: string;
   diff: string;
   additions: number;
   deletions: number;
-  status: "added" | "deleted" | "modified" | "unchanged";
+  status: SessionStatus;
+  originalContent: string;
+  modifiedContent: string;
+  isBinary: boolean;
 };
 
 type Props = {
@@ -23,11 +42,16 @@ type Props = {
   onClose: () => void;
 };
 
-function splitPath(p: string): { name: string; dir: string } {
-  const parts = p.replace(/\\/g, "/").split("/");
-  const name = parts.pop() ?? p;
-  return { name, dir: parts.join("/") };
-}
+const VIEW_MODE_KEY = "terax.session-diff.viewMode";
+type ViewMode = "list" | "tree";
+
+// Map the session status to the single-letter git code used by statusBadgeClass.
+const STATUS_CODE: Record<SessionStatus, string> = {
+  added: "A",
+  deleted: "D",
+  modified: "M",
+  unchanged: "",
+};
 
 export const AiSessionDiffPane = memo(function AiSessionDiffPane({
   tab,
@@ -37,6 +61,18 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const cancelRef = useRef(false);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try {
+      const v = localStorage.getItem(VIEW_MODE_KEY);
+      if (v === "list" || v === "tree") return v;
+    } catch {
+      /* ignore */
+    }
+    return "tree";
+  });
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(
+    new Set(),
+  );
 
   const load = useCallback(async () => {
     const res = await invoke<SessionFileChange[]>("session_changes", {
@@ -45,12 +81,6 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
     });
     if (cancelRef.current) return;
     setChanges(res);
-    // Keep the current selection if it still exists, otherwise pick the first.
-    setSelected((prev) =>
-      prev && res.some((c) => c.path === prev)
-        ? prev
-        : (res[0]?.path ?? null),
-    );
   }, [tab.jsonlPath, tab.cwd]);
 
   useEffect(() => {
@@ -58,6 +88,7 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
     setLoading(true);
     setChanges([]);
     setSelected(null);
+    setCollapsedFolders(new Set());
     load()
       .catch(() => {
         if (!cancelRef.current) setChanges([]);
@@ -70,14 +101,21 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
     };
   }, [load]);
 
-  // Live-refresh while the session is still running (new edits land in the JSONL).
+  // Live-refresh while the session is still running (new edits land in the
+  // JSONL). Debounced so a burst of writes triggers one reload, not dozens —
+  // each reload spawns git, so unbounded refresh would hammer the backend.
   useEffect(() => {
     const win = getCurrentWebviewWindow();
     let unlisten: (() => void) | null = null;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     win
       .listen<string>("ai:history_changed", (event) => {
-        if (event.payload === "claude") void load();
+        if (event.payload !== tab.tool) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          void load();
+        }, 350);
       })
       .then((fn) => {
         if (cancelled) fn();
@@ -85,13 +123,42 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
       });
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
       unlisten?.();
     };
-  }, [load]);
+  }, [load, tab.tool]);
+
+  // Session file paths are absolute (e.g. C:\Users\…\src\file.ts). Display them
+  // relative to the session cwd so the tree is rooted at the project instead of
+  // exploding into drive-letter / home-directory folders. `path` becomes the
+  // relative path used for grouping, selection, and the diff; absolute paths
+  // outside cwd keep their full path (still unique).
+  const relChanges = useMemo(() => {
+    const root = tab.cwd.replace(/\\/g, "/").replace(/\/$/, "");
+    const prefix = `${root}/`;
+    return changes.map((c) => {
+      const abs = c.path.replace(/\\/g, "/");
+      const head = abs.slice(0, prefix.length);
+      const inCwd = CASE_INSENSITIVE_FS
+        ? head.toLowerCase() === prefix.toLowerCase()
+        : head === prefix;
+      return { ...c, path: inCwd ? abs.slice(prefix.length) : abs };
+    });
+  }, [changes, tab.cwd]);
+
+  // Keep the current selection if it still exists, otherwise pick the first.
+  // Runs after each (live) reload, in the same relative-path space as the tree.
+  useEffect(() => {
+    setSelected((prev) =>
+      prev && relChanges.some((c) => c.path === prev)
+        ? prev
+        : (relChanges[0]?.path ?? null),
+    );
+  }, [relChanges]);
 
   const selectedChange = useMemo(
-    () => changes.find((c) => c.path === selected) ?? null,
-    [changes, selected],
+    () => relChanges.find((c) => c.path === selected) ?? null,
+    [relChanges, selected],
   );
 
   const totals = useMemo(
@@ -105,6 +172,35 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
         { add: 0, del: 0 },
       ),
     [changes],
+  );
+
+  const toggleViewMode = useCallback(() => {
+    setViewMode((prev) => {
+      const next = prev === "list" ? "tree" : "list";
+      try {
+        localStorage.setItem(VIEW_MODE_KEY, next);
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleFolder = useCallback((folderPath: string) => {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderPath)) next.delete(folderPath);
+      else next.add(folderPath);
+      return next;
+    });
+  }, []);
+
+  const nodes = useMemo(
+    () =>
+      viewMode === "tree"
+        ? flattenFileTree(relChanges, collapsedFolders)
+        : relChanges.map((entry) => ({ kind: "file" as const, entry, depth: 0 })),
+    [relChanges, collapsedFolders, viewMode],
   );
 
   const shortPath = tab.cwd.replace(/\\/g, "/").split("/").slice(-2).join("/");
@@ -157,27 +253,75 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
-          {/* File list sidebar */}
-          <div className="w-64 shrink-0 overflow-y-auto border-r border-border/50 [scrollbar-gutter:stable]">
-            {changes.map((c) => (
-              <FileRow
-                key={c.path}
-                change={c}
-                active={c.path === selected}
-                onSelect={() => setSelected(c.path)}
-              />
-            ))}
+          {/* File list / tree sidebar */}
+          <div className="flex w-60 shrink-0 flex-col border-r border-border/50">
+            <div className="flex h-7 shrink-0 items-center justify-between px-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                Changed files
+              </span>
+              <button
+                type="button"
+                onClick={toggleViewMode}
+                aria-label={
+                  viewMode === "list"
+                    ? "Switch to tree view"
+                    : "Switch to list view"
+                }
+                title={viewMode === "list" ? "Tree view" : "List view"}
+                className={cn(
+                  "inline-flex size-5 items-center justify-center rounded transition-colors",
+                  "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+                  viewMode === "tree" && "bg-foreground/[0.06] text-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={viewMode === "list" ? FolderTreeIcon : File02Icon}
+                  size={12}
+                  strokeWidth={1.8}
+                />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+              {nodes.map((node) =>
+                node.kind === "folder" ? (
+                  <FolderRow
+                    key={`folder:${node.path}`}
+                    name={node.name}
+                    depth={node.depth}
+                    count={node.childCount}
+                    collapsed={collapsedFolders.has(node.path)}
+                    onToggle={() => toggleFolder(node.path)}
+                  />
+                ) : (
+                  <FileRow
+                    key={node.entry.path}
+                    change={node.entry}
+                    depth={viewMode === "tree" ? node.depth : 0}
+                    showDir={viewMode === "list"}
+                    active={node.entry.path === selected}
+                    onSelect={() => setSelected(node.entry.path)}
+                  />
+                ),
+              )}
+            </div>
           </div>
 
-          {/* Inline diff */}
-          <div className="min-w-0 flex-1 overflow-auto bg-background/60">
+          {/* Diff — rendered at normal editor size, like Source Control. */}
+          <div className="min-w-0 flex-1 overflow-hidden bg-background/60">
             {selectedChange ? (
-              selectedChange.diff.trim() === "" ? (
+              selectedChange.status === "unchanged" ? (
                 <p className="px-4 py-4 text-[11px] text-muted-foreground/60">
                   No net changes for this file in the session.
                 </p>
               ) : (
-                <DiffView diff={selectedChange.diff} />
+                <SessionDiffEditor
+                  key={selectedChange.path}
+                  path={selectedChange.path}
+                  originalContent={selectedChange.originalContent}
+                  modifiedContent={selectedChange.modifiedContent}
+                  isBinary={selectedChange.isBinary}
+                  fallbackPatch={selectedChange.diff}
+                />
               )
             ) : (
               <p className="px-4 py-4 text-[11px] text-muted-foreground/60">
@@ -191,61 +335,89 @@ export const AiSessionDiffPane = memo(function AiSessionDiffPane({
   );
 });
 
-// ── FileRow (sidebar entry) ──────────────────────────────────────────────────
+// ── FolderRow ────────────────────────────────────────────────────────────────
 
-const STATUS_ACCENT: Record<SessionFileChange["status"], string> = {
-  added: "bg-emerald-500",
-  deleted: "bg-red-500",
-  modified: "bg-amber-500",
-  unchanged: "bg-muted-foreground/30",
-};
+const FolderRow = memo(function FolderRow({
+  name,
+  depth,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  name: string;
+  depth: number;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      style={{ paddingLeft: `${6 + depth * 12}px` }}
+      className="flex h-6 w-full items-center gap-1.5 pr-2 text-left transition-colors hover:bg-foreground/[0.04]"
+    >
+      <HugeiconsIcon
+        icon={ArrowRight01Icon}
+        size={9}
+        strokeWidth={2.4}
+        className={cn(
+          "shrink-0 text-muted-foreground/60 transition-transform duration-100",
+          !collapsed && "rotate-90",
+        )}
+      />
+      <img src={folderIconUrl(name, !collapsed)} alt="" className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-foreground/85">
+        {name}
+      </span>
+      <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/50">
+        {count}
+      </span>
+    </button>
+  );
+});
+
+// ── FileRow ──────────────────────────────────────────────────────────────────
 
 const FileRow = memo(function FileRow({
   change,
+  depth,
+  showDir,
   active,
   onSelect,
 }: {
   change: SessionFileChange;
+  depth: number;
+  showDir: boolean;
   active: boolean;
   onSelect: () => void;
 }) {
-  const { name, dir } = splitPath(change.path);
+  const name = basename(change.path);
+  const dir = dirname(change.path);
+  const code = STATUS_CODE[change.status];
   return (
     <button
       type="button"
       onClick={onSelect}
       title={change.path}
+      style={{ paddingLeft: `${6 + depth * 12}px` }}
       className={cn(
-        "flex w-full items-center gap-2 border-l-2 px-3 py-1.5 text-left transition-colors",
+        "flex h-7 w-full items-center gap-1.5 border-l-2 pr-2 text-left transition-colors",
         active
           ? "border-primary bg-foreground/[0.06]"
           : "border-transparent hover:bg-foreground/[0.04]",
       )}
     >
-      <span
-        className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          STATUS_ACCENT[change.status],
-        )}
-        aria-hidden
-      />
-      <HugeiconsIcon
-        icon={File01Icon}
-        size={12}
-        strokeWidth={1.75}
-        className="shrink-0 text-muted-foreground/60"
-      />
-      <div className="min-w-0 flex-1">
-        <span className="block truncate text-[11.5px] text-foreground/90">
-          {name}
-        </span>
-        {dir && (
-          <span className="block truncate text-[10px] text-muted-foreground/55">
+      <img src={fileIconUrl(name)} alt="" className="size-3.5 shrink-0" />
+      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span className="truncate text-[11px] text-foreground/90">{name}</span>
+        {showDir && dir && (
+          <span className="min-w-0 flex-1 truncate text-[9.5px] text-muted-foreground/50">
             {dir}
           </span>
         )}
       </div>
-      <span className="shrink-0 font-mono text-[9.5px] leading-tight">
+      <span className="shrink-0 font-mono text-[9px] leading-tight">
         {change.additions > 0 && (
           <span className="text-emerald-400">+{change.additions}</span>
         )}
@@ -254,58 +426,17 @@ const FileRow = memo(function FileRow({
           <span className="text-red-400">−{change.deletions}</span>
         )}
       </span>
+      {code && (
+        <span
+          className={cn(
+            "w-3 shrink-0 text-center text-[10px] font-semibold leading-none",
+            statusBadgeClass(code),
+          )}
+          aria-hidden
+        >
+          {code}
+        </span>
+      )}
     </button>
   );
 });
-
-// ── DiffView ─────────────────────────────────────────────────────────────────
-
-function DiffView({ diff }: { diff: string }) {
-  const lines = diff.split("\n");
-  return (
-    <pre className="min-w-full p-2 font-mono text-[11px] leading-relaxed">
-      {lines.map((line, i) => {
-        if (line.startsWith("+++") || line.startsWith("---")) {
-          return (
-            <span key={i} className="block text-muted-foreground/70">
-              {line}
-            </span>
-          );
-        }
-        if (line.startsWith("diff --git")) {
-          return (
-            <span key={i} className="block text-muted-foreground/50">
-              {line}
-            </span>
-          );
-        }
-        if (line.startsWith("@@")) {
-          return (
-            <span key={i} className="block text-blue-400/80">
-              {line}
-            </span>
-          );
-        }
-        if (line.startsWith("+")) {
-          return (
-            <span key={i} className="block bg-emerald-500/10 text-emerald-400">
-              {line}
-            </span>
-          );
-        }
-        if (line.startsWith("-")) {
-          return (
-            <span key={i} className="block bg-red-500/10 text-red-400">
-              {line}
-            </span>
-          );
-        }
-        return (
-          <span key={i} className="block text-foreground/70">
-            {line || " "}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}

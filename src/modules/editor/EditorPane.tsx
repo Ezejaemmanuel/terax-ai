@@ -11,6 +11,7 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { EDITOR_THEME_EXT } from "./lib/themes";
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -23,6 +24,9 @@ import {
   languageCompartment,
   vimCompartment,
 } from "./lib/extensions";
+import { gitGutter, setGitBaseline } from "./lib/gitGutter";
+import { native, type GitRepoInfo } from "@/modules/ai/lib/native";
+import { listenFsChanged, parentDir } from "@/modules/explorer/lib/watch";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 
 initVimGlobals();
@@ -31,6 +35,34 @@ import { useDocument } from "./lib/useDocument";
 import { inlineCompletion } from "./lib/autocomplete/inlineExtension";
 import { getKey } from "@/modules/ai/lib/keyring";
 import { onKeysChanged } from "@/modules/settings/store";
+import { CASE_INSENSITIVE_FS } from "@/lib/platform";
+
+// On Windows (and macOS) the filesystem is case-insensitive: the path git
+// reports for the repo root and the path a tab carries can differ in
+// drive-letter / segment casing, so paths must be compared case-folded.
+function samePath(a: string, b: string): boolean {
+  const na = a.replace(/\\/g, "/");
+  const nb = b.replace(/\\/g, "/");
+  return CASE_INSENSITIVE_FS ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
+// Resolving the repo for a file spawns git; cache per directory (promise, to
+// dedup concurrent opens) so switching between files in a repo doesn't respawn.
+const repoRootCache = new Map<string, Promise<GitRepoInfo | null>>();
+function resolveRepoCached(dir: string): Promise<GitRepoInfo | null> {
+  // Case-fold the cache key on a case-insensitive FS so C:\Foo and c:\foo share.
+  const key = CASE_INSENSITIVE_FS ? dir.toLowerCase() : dir;
+  const hit = repoRootCache.get(key);
+  if (hit) return hit;
+  const p = native.gitResolveRepo(dir).catch(() => null);
+  repoRootCache.set(key, p);
+  // Don't keep a negative result forever — a folder can become a repo (git
+  // init) mid-session. The in-flight promise still dedups concurrent opens.
+  void p.then((repo) => {
+    if (!repo) repoRootCache.delete(key);
+  });
+  return p;
+}
 
 export type EditorPaneHandle = {
   setQuery: (q: string) => void;
@@ -113,6 +145,46 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const pathRef = useRef(path);
     pathRef.current = path;
 
+    // Load the git baseline (index content) so the change gutter can mark
+    // added/modified/deleted lines. Best-effort: outside a repo, untracked, or
+    // any git error simply clears the gutter. Stable identity (reads pathRef),
+    // and guards against a stale resolve landing after the file switched.
+    const loadBaseline = useCallback(async () => {
+      const view = cmRef.current?.view;
+      if (!view) return;
+      const target = pathRef.current;
+      const repo = await resolveRepoCached(parentDir(target));
+      if (pathRef.current !== target) return;
+      if (!repo) {
+        cmRef.current?.view?.dispatch({ effects: setGitBaseline.of(null) });
+        return;
+      }
+      // Slice from the real (cased) string so git keeps the file's true casing,
+      // but compare case-insensitively on Windows to find the prefix boundary.
+      const root = repo.repoRoot.replace(/\\/g, "/").replace(/\/$/, "");
+      const abs = target.replace(/\\/g, "/");
+      const prefix = `${root}/`;
+      const head = abs.slice(0, prefix.length);
+      const inRepo = CASE_INSENSITIVE_FS
+        ? head.toLowerCase() === prefix.toLowerCase()
+        : head === prefix;
+      const rel = inRepo ? abs.slice(prefix.length) : abs;
+      try {
+        const res = await native.gitDiffContent(repo.repoRoot, rel, false);
+        if (pathRef.current !== target) return;
+        cmRef.current?.view?.dispatch({
+          effects: setGitBaseline.of(res.isBinary ? null : res.originalContent),
+        });
+      } catch {
+        if (pathRef.current !== target) return;
+        // Repo resolved but no index entry (untracked / new file): treat the
+        // whole file as added so the gutter still reflects it.
+        cmRef.current?.view?.dispatch({ effects: setGitBaseline.of("") });
+      }
+    }, []);
+    const loadBaselineRef = useRef(loadBaseline);
+    loadBaselineRef.current = loadBaseline;
+
     const extensions = useMemo(
       () => [
         // basicSetup is added before user extensions by @uiw/react-codemirror,
@@ -125,11 +197,13 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
             void (async () => {
               await saveRef.current();
               onSavedRef.current?.();
+              void loadBaselineRef.current();
             })();
           },
           close: () => onCloseRef.current?.(),
         })),
         ...buildSharedExtensions(),
+        gitGutter(),
         languageCompartment.of([]),
         inlineCompletion({
           getPrefs: () => {
@@ -169,6 +243,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
               void (async () => {
                 await saveRef.current();
                 onSavedRef.current?.();
+                void loadBaselineRef.current();
               })();
               return true;
             },
@@ -214,6 +289,31 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         cancelled = true;
       };
     }, [path, doc.status]);
+
+    // (Re)load the git baseline when the file opens or finishes loading.
+    useEffect(() => {
+      if (doc.status !== "ready") return;
+      void loadBaseline();
+    }, [path, doc.status, loadBaseline]);
+
+    // Refresh the baseline when the open file changes on disk (e.g. a git
+    // checkout or external edit rewrites it), so the gutter doesn't go stale.
+    useEffect(() => {
+      let unlisten: (() => void) | null = null;
+      let cancelled = false;
+      void listenFsChanged((paths) => {
+        if (paths.some((p) => samePath(p, pathRef.current))) {
+          void loadBaselineRef.current();
+        }
+      }).then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+      return () => {
+        cancelled = true;
+        unlisten?.();
+      };
+    }, []);
 
     useImperativeHandle(
       ref,

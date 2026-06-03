@@ -1562,6 +1562,7 @@ export default function App() {
                             jsonlPath: session.jsonlPath,
                             cwd: session.cwd,
                             sessionTitle: session.title,
+                            tool: "claude",
                           })
                         }
                       />
@@ -1577,6 +1578,7 @@ export default function App() {
                             jsonlPath: session.jsonlPath,
                             cwd: session.cwd,
                             sessionTitle: session.title,
+                            tool: "codex",
                           })
                         }
                       />

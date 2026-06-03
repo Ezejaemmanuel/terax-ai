@@ -123,6 +123,7 @@ export type AiSessionDiffTab = {
   sessionId: string;
   jsonlPath: string;
   cwd: string;
+  tool: "claude" | "codex";
   pinned?: boolean;
   color?: string;
 };
@@ -876,7 +877,13 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, []);
 
   const openAiSessionDiffTab = useCallback(
-    (input: { sessionId: string; jsonlPath: string; cwd: string; sessionTitle: string }) => {
+    (input: {
+      sessionId: string;
+      jsonlPath: string;
+      cwd: string;
+      sessionTitle: string;
+      tool: "claude" | "codex";
+    }) => {
       const curr = tabsRef.current;
       const existing = curr.find(
         (t) => t.kind === "ai-session-diff" && t.sessionId === input.sessionId,
@@ -893,6 +900,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         sessionId: input.sessionId,
         jsonlPath: input.jsonlPath,
         cwd: input.cwd,
+        tool: input.tool,
       };
       const nextTabs = [...curr, tab];
       tabsRef.current = nextTabs;

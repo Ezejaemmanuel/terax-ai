@@ -463,7 +463,13 @@ fn git_output_with_timeout(
     let args: Vec<String> = args.iter().map(|&s| s.to_string()).collect();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(std::process::Command::new("git").args(&args).output());
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(&args);
+        // Suppress the console window that would otherwise flash on Windows for
+        // every git invocation — this path runs once per changed file and is
+        // re-triggered on each live session refresh.
+        crate::modules::proc::hide_console(&mut cmd);
+        let _ = tx.send(cmd.output());
     });
     rx.recv_timeout(Duration::from_secs(timeout_secs))
         .map_err(|_| format!("git timed out after {timeout_secs}s"))?
@@ -631,12 +637,28 @@ pub async fn session_file_diff(
 // plain `git diff HEAD`, which goes blank once committed).
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionFileChange {
     pub path: String, // absolute path of the changed file
     pub diff: String, // unified diff (baseline -> current) with clean headers
     pub additions: u32,
     pub deletions: u32,
     pub status: String, // "added" | "deleted" | "modified" | "unchanged"
+    // Baseline ("original") and on-disk ("current") content so the frontend can
+    // render a real CodeMirror diff instead of a plain text patch. Empty when
+    // `is_binary` is true or either side exceeds DIFF_CONTENT_CAP — fall back to
+    // `diff` in those cases.
+    pub original_content: String,
+    pub modified_content: String,
+    pub is_binary: bool,
+}
+
+// Cap the inline content we ship to the frontend per side. Above this the
+// CodeMirror merge view is too heavy; the UI falls back to the patch text.
+const DIFF_CONTENT_CAP: usize = 512 * 1024; // 512 KB
+
+fn looks_binary(s: &str) -> bool {
+    s.as_bytes().iter().take(8192).any(|&b| b == 0)
 }
 
 const FILE_TOOLS: &[&str] = &["Edit", "Write", "Create", "MultiEdit", "NotebookEdit"];
@@ -876,12 +898,29 @@ fn collect_session_changes(jsonl_path: &Path, cwd: &str) -> Vec<SessionFileChang
         }
         .to_string();
 
+        // Ship raw content for the CodeMirror diff unless it's binary or too
+        // large, in which case the frontend renders the `diff` patch instead.
+        let is_binary = looks_binary(&baseline) || looks_binary(&current);
+        let too_large = baseline.len() > DIFF_CONTENT_CAP || current.len() > DIFF_CONTENT_CAP;
+        // Normalize CRLF -> LF on both sides so an autocrlf line-ending
+        // difference (LF baseline vs CRLF working copy) doesn't render every
+        // line as changed in the CodeMirror merge view. The +/- counts above
+        // already use CRLF-normalized content via `unified_diff`.
+        let (original_content, modified_content) = if is_binary || too_large {
+            (String::new(), String::new())
+        } else {
+            (baseline.replace("\r\n", "\n"), current.replace("\r\n", "\n"))
+        };
+
         out.push(SessionFileChange {
             path: abs,
             diff,
             additions: adds,
             deletions: dels,
             status,
+            original_content,
+            modified_content,
+            is_binary: is_binary || too_large,
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));

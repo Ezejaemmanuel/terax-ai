@@ -51,6 +51,13 @@ import {
   type ReactNode,
 } from "react";
 import { joinRepoPath } from "@/modules/explorer/lib/gitDecoration";
+import {
+  basename,
+  dirname,
+  flattenFileTree,
+  pathStartsWithFolder,
+  statusBadgeClass,
+} from "./lib/fileTree";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
   useSourceControlPanel,
@@ -93,94 +100,14 @@ type RowDescriptor =
   | { kind: "entry"; key: string; entry: SourceControlFileEntry; depth: number }
   | { kind: "tree-folder"; key: string; folderPath: string; name: string; depth: number; collapsed: boolean; count: number; checkState: CheckState };
 
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : path;
-}
-
-function dirname(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const index = normalized.lastIndexOf("/");
-  if (index <= 0) return "";
-  return normalized.slice(0, index);
-}
-
 function entryPathLabel(entry: SourceControlFileEntry): string {
   if (entry.originalPath) return `${entry.originalPath} → ${entry.path}`;
   return dirname(entry.path);
 }
 
-type TreeFileNode =
-  | { kind: "folder"; path: string; name: string; depth: number; childCount: number }
-  | { kind: "file"; entry: SourceControlFileEntry; depth: number };
-
-function flattenFileTree(
-  entries: SourceControlFileEntry[],
-  collapsed: Set<string>,
-): TreeFileNode[] {
-  type Dir = { files: SourceControlFileEntry[]; subdirs: Map<string, Dir> };
-  const root: Dir = { files: [], subdirs: new Map() };
-
-  for (const entry of entries) {
-    const parts = entry.path.replace(/\\/g, "/").split("/").filter(Boolean);
-    let cur = root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const seg = parts[i];
-      if (!cur.subdirs.has(seg)) cur.subdirs.set(seg, { files: [], subdirs: new Map() });
-      cur = cur.subdirs.get(seg)!;
-    }
-    cur.files.push(entry);
-  }
-
-  function countAll(dir: Dir): number {
-    let n = dir.files.length;
-    for (const sub of dir.subdirs.values()) n += countAll(sub);
-    return n;
-  }
-
-  const result: TreeFileNode[] = [];
-
-  function walk(dir: Dir, prefix: string, depth: number) {
-    const sortedDirs = [...dir.subdirs.entries()].sort(([a], [b]) => a.localeCompare(b));
-    for (const [name, subdir] of sortedDirs) {
-      const folderPath = prefix ? `${prefix}/${name}` : name;
-      result.push({ kind: "folder", path: folderPath, name, depth, childCount: countAll(subdir) });
-      if (!collapsed.has(folderPath)) walk(subdir, folderPath, depth + 1);
-    }
-    const sortedFiles = [...dir.files].sort((a, b) =>
-      basename(a.path).localeCompare(basename(b.path)),
-    );
-    for (const entry of sortedFiles) result.push({ kind: "file", entry, depth });
-  }
-
-  walk(root, "", 0);
-  return result;
-}
-
-function pathStartsWithFolder(path: string, folderPath: string): boolean {
-  return path === folderPath || path.startsWith(`${folderPath}/`);
-}
-
 function upstreamBadgeLabel(upstream: string | null | undefined): string {
   if (!upstream) return "No upstream";
   return upstream;
-}
-
-function statusBadgeClass(code: string): string {
-  switch (code) {
-    case "A":
-      return "text-emerald-400";
-    case "U":
-      return "text-teal-400";
-    case "M":
-      return "text-amber-400";
-    case "D":
-      return "text-rose-400";
-    case "R":
-      return "text-sky-400";
-    default:
-      return "text-muted-foreground/60";
-  }
 }
 
 function checkboxValue(state: CheckState): boolean | "indeterminate" {
