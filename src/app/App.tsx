@@ -1643,6 +1643,8 @@ export default function App() {
                   activeId={activeId}
                   onSelect={setActiveId}
                   onClose={handleClose}
+                  onTogglePin={toggleTabPin}
+                  onReorder={reorderTab}
                 />
               </ResizablePanel>
             </ResizablePanelGroup>

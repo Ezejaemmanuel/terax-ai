@@ -13,9 +13,10 @@ import {
   Copy01Icon,
   Folder01Icon,
   FolderLibraryIcon,
+  PinIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo } from "react";
+import { memo, useState } from "react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -28,6 +29,10 @@ type Props = {
   activeId: number;
   onSelect: (id: number) => void;
   onClose: (id: number) => void;
+  /** Toggle a terminal's pinned state (shared with the tab bar). */
+  onTogglePin: (id: number) => void;
+  /** Move a terminal within the shared tab order. gap is an index into `tabs`. */
+  onReorder: (fromId: number, toGapIndex: number) => void;
 };
 
 function cwdBasename(cwd?: string): string {
@@ -74,11 +79,17 @@ function groupByFolder(terminalTabs: TerminalTab[]): FolderGroup[] {
   return [...groups.values()];
 }
 
+// Where a drag would land: a line above `beforeId`, or below `afterId` (the
+// last row of a scope). Kept as ids (not indices) so it survives re-renders.
+type DropIndicator = { beforeId: number } | { afterId: number } | null;
+
 export const TerminalListPanel = memo(function TerminalListPanel({
   tabs,
   activeId,
   onSelect,
   onClose,
+  onTogglePin,
+  onReorder,
 }: Props) {
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
@@ -89,28 +100,104 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.kind === "terminal");
   const canClose = terminalTabs.length > 1;
 
-  const renderTab = (tab: TerminalTab) => {
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [dropInd, setDropInd] = useState<DropIndicator>(null);
+
+  const clearDrag = () => {
+    setDraggingId(null);
+    setDropInd(null);
+  };
+
+  // A drag may only land within the same scope: anywhere when flat, or within
+  // the dragged terminal's own folder group when grouped (the user's choice).
+  const sameScope = (a: TerminalTab, b: TerminalTab) =>
+    !grouped || folderKey(a.cwd) === folderKey(b.cwd);
+
+  const onRowDragOver = (e: React.DragEvent, tab: TerminalTab) => {
+    if (draggingId === null || draggingId === tab.id) return;
+    const dragged = terminalTabs.find((t) => t.id === draggingId);
+    if (!dragged || !sameScope(dragged, tab)) {
+      // Not a valid target — let the browser show "no drop" and hide the line.
+      if (dropInd !== null) setDropInd(null);
+      return;
+    }
+    e.preventDefault(); // mark as a drop target
+    const rect = e.currentTarget.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    setDropInd(before ? { beforeId: tab.id } : { afterId: tab.id });
+  };
+
+  const onRowDrop = (e: React.DragEvent, tab: TerminalTab) => {
+    if (draggingId === null || draggingId === tab.id) {
+      clearDrag();
+      return;
+    }
+    const dragged = terminalTabs.find((t) => t.id === draggingId);
+    if (!dragged || !sameScope(dragged, tab)) {
+      clearDrag();
+      return;
+    }
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    const refIndex = tabs.findIndex((t) => t.id === tab.id);
+    if (refIndex !== -1) {
+      // reorderTab interprets the gap as an index into the full `tabs` array.
+      onReorder(draggingId, before ? refIndex : refIndex + 1);
+    }
+    clearDrag();
+  };
+
+  const renderTab = (tab: TerminalTab, isLastInScope: boolean, scopeKey: string) => {
     const isActive = tab.id === activeId;
     const agentSession = agentSessions[tab.activeLeafId];
     const sessionTitle = tabTitles.get(tab.id);
     const label = sessionTitle ?? cwdBasename(tab.cwd);
     const sublabel = sessionTitle ? cwdBasename(tab.cwd) : null;
     const status = agentSession?.status;
+    const lineBefore = dropInd && "beforeId" in dropInd && dropInd.beforeId === tab.id;
+    const lineAfter =
+      isLastInScope && dropInd && "afterId" in dropInd && dropInd.afterId === tab.id;
 
     return (
       <ContextMenu key={tab.id}>
         <ContextMenuTrigger asChild>
           <div
+            data-term-id={tab.id}
+            data-scope={scopeKey}
+            draggable
+            onDragStart={(e) => {
+              setDraggingId(tab.id);
+              e.dataTransfer.effectAllowed = "move";
+              // Firefox requires data to be set for a drag to start.
+              e.dataTransfer.setData("text/plain", String(tab.id));
+            }}
+            onDragOver={(e) => onRowDragOver(e, tab)}
+            onDrop={(e) => onRowDrop(e, tab)}
+            onDragEnd={clearDrag}
             className={cn(
-              "group flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
+              "group relative flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
               agentSession
                 ? "border-l-2 border-emerald-500/70 pl-[10px]"
                 : "border-l-2 border-transparent",
               isActive
                 ? "bg-accent/60 text-foreground"
                 : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+              draggingId === tab.id && "opacity-40",
             )}
           >
+            {lineBefore && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-x-2 -top-px h-0.5 rounded-full bg-primary"
+              />
+            )}
+            {lineAfter && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary"
+              />
+            )}
             <button
               type="button"
               onClick={() => onSelect(tab.id)}
@@ -159,6 +246,11 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                 />
               )}
             </button>
+            {tab.pinned && (
+              <span title="Pinned" className="mt-0.5 shrink-0 text-muted-foreground/70">
+                <HugeiconsIcon icon={PinIcon} size={11} strokeWidth={1.75} />
+              </span>
+            )}
             {canClose && (
               <button
                 type="button"
@@ -171,14 +263,18 @@ export const TerminalListPanel = memo(function TerminalListPanel({
             )}
           </div>
         </ContextMenuTrigger>
-        {tab.cwd && (
-          <ContextMenuContent>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => onTogglePin(tab.id)}>
+            <HugeiconsIcon icon={PinIcon} size={14} strokeWidth={1.75} />
+            {tab.pinned ? "Unpin terminal" : "Pin terminal"}
+          </ContextMenuItem>
+          {tab.cwd && (
             <ContextMenuItem onClick={() => copyToClipboard(tab.cwd!)}>
               <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
               Copy file path
             </ContextMenuItem>
-          </ContextMenuContent>
-        )}
+          )}
+        </ContextMenuContent>
       </ContextMenu>
     );
   };
@@ -231,12 +327,18 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                     {group.tabs.length}
                   </span>
                 </div>
-                {group.tabs.map(renderTab)}
+                {group.tabs.map((tab, i) =>
+                  renderTab(tab, i === group.tabs.length - 1, group.key),
+                )}
               </div>
             ))}
           </div>
         ) : (
-          <div className="pb-2">{terminalTabs.map(renderTab)}</div>
+          <div className="pb-2">
+            {terminalTabs.map((tab, i) =>
+              renderTab(tab, i === terminalTabs.length - 1, "flat"),
+            )}
+          </div>
         )}
       </div>
     </div>
