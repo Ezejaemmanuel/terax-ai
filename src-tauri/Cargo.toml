@@ -1,6 +1,6 @@
 [package]
 name = "terax"
-version = "0.7.11-jatique-40"
+version = "0.7.11-jatique-41"
 description = "Terax â€” an open-source AI-native terminal emulator"
 authors = ["crynta"]
 license = "Apache-2.0"
@@ -73,6 +73,14 @@ windows-sys = { version = "0.59", features = [
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
+
+# Vendored portable-pty with PSUEDOCONSOLE_INHERIT_CURSOR removed from
+# CreatePseudoConsole. That flag triggers the Windows ClosePseudoConsole
+# teardown deadlock (microsoft/terminal#17688) on builds < 11 24H2, which froze
+# new terminals while the ConPTY lifecycle lock was held. See
+# vendor/portable-pty/src/win/psuedocon.rs and modules/pty/session.rs.
+[patch.crates-io]
+portable-pty = { path = "vendor/portable-pty" }
 
 [profile.dev]
 incremental = true

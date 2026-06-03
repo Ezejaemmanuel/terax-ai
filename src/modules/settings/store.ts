@@ -82,6 +82,7 @@ export type Preferences = {
   terminalFontSize: number;
   terminalScrollback: number;
   terminalCommandNotifications: boolean;
+  terminalsGroupByFolder: boolean;
   lastWslDistro: string | null;
   zoomLevel: number;
   agentNotifications: boolean;
@@ -126,6 +127,7 @@ const KEY_TERMINAL_LETTER_SPACING = "terminalLetterSpacing";
 const KEY_TERMINAL_FONT_SIZE = "terminalFontSize";
 const KEY_TERMINAL_SCROLLBACK = "terminalScrollback";
 const KEY_TERMINAL_COMMAND_NOTIFICATIONS = "terminalCommandNotifications";
+const KEY_TERMINALS_GROUP_BY_FOLDER = "terminalsGroupByFolder";
 const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
@@ -183,6 +185,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
   terminalScrollback: TERMINAL_SCROLLBACK_DEFAULT,
   terminalCommandNotifications: true,
+  terminalsGroupByFolder: true,
   lastWslDistro: null,
   zoomLevel: 1.0,
   agentNotifications: true,
@@ -308,6 +311,9 @@ export async function loadPreferences(): Promise<Preferences> {
     terminalCommandNotifications:
       get<boolean>(KEY_TERMINAL_COMMAND_NOTIFICATIONS) ??
       DEFAULT_PREFERENCES.terminalCommandNotifications,
+    terminalsGroupByFolder:
+      get<boolean>(KEY_TERMINALS_GROUP_BY_FOLDER) ??
+      DEFAULT_PREFERENCES.terminalsGroupByFolder,
     agentNotifications:
       get<boolean>(KEY_AGENT_NOTIFICATIONS) ??
       DEFAULT_PREFERENCES.agentNotifications,
@@ -518,6 +524,10 @@ export async function setTerminalCommandNotifications(value: boolean): Promise<v
   await writePref(KEY_TERMINAL_COMMAND_NOTIFICATIONS, value);
 }
 
+export async function setTerminalsGroupByFolder(value: boolean): Promise<void> {
+  await writePref(KEY_TERMINALS_GROUP_BY_FOLDER, value);
+}
+
 export async function setAgentNotifications(value: boolean): Promise<void> {
   await writePref(KEY_AGENT_NOTIFICATIONS, value);
 }
@@ -573,6 +583,7 @@ export async function onPreferencesChange(
     [KEY_TERMINAL_FONT_SIZE]: "terminalFontSize",
     [KEY_TERMINAL_SCROLLBACK]: "terminalScrollback",
     [KEY_TERMINAL_COMMAND_NOTIFICATIONS]: "terminalCommandNotifications",
+    [KEY_TERMINALS_GROUP_BY_FOLDER]: "terminalsGroupByFolder",
     [KEY_LAST_WSL_DISTRO]: "lastWslDistro",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_AGENT_NOTIFICATIONS]: "agentNotifications",

@@ -73,8 +73,17 @@ static CONPTY_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 // finishes in a few ms; if one wedges past this deadline we release the lock so
 // it can never freeze every future pty_open, at the cost of leaking one
 // conhost. See `drop_session`.
+//
+// Kept deliberately short: on affected builds *every* close wedges (it never
+// returns regardless of how long we wait), so a longer deadline buys nothing
+// but a longer hold on CONPTY_LIFECYCLE_LOCK — which is exactly what made
+// back-to-back closes blank the next terminal for seconds. 250ms still leaves
+// ample headroom for a healthy close (a few ms) while keeping the worst-case
+// lock hold an order of magnitude below the old 2s. The vendored portable-pty
+// patch that drops PSEUDOCONSOLE_INHERIT_CURSOR removes the wedge entirely; this
+// stays as a backstop for unpatched/edge cases.
 #[cfg(windows)]
-const CONPTY_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+const CONPTY_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 // Wait until `done.0` is set true or `timeout` elapses. Returns whether it
 // completed. Kept separate from `drop_session` so the bounded-wait invariant is
@@ -150,8 +159,8 @@ pub(super) fn drop_session(session: Arc<Session>) {
             log::debug!("ConPTY close returned in {}ms", started.elapsed().as_millis());
         } else {
             log::warn!(
-                "ConPTY close exceeded {}s; releasing lifecycle lock (one conhost may leak)",
-                CONPTY_CLOSE_TIMEOUT.as_secs()
+                "ConPTY close exceeded {}ms; releasing lifecycle lock (one conhost may leak)",
+                CONPTY_CLOSE_TIMEOUT.as_millis()
             );
         }
         // The drain thread is detached: it ends on its own when the conout pipe

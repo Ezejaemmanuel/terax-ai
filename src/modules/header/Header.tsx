@@ -20,6 +20,7 @@ import {
   GridViewIcon,
   LayoutTwoColumnIcon,
   LayoutTwoRowIcon,
+  RefreshIcon,
   Settings01Icon,
   SidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
@@ -55,6 +56,10 @@ type Props = {
   canSplit: boolean;
   onActivateAgent: (tabId: number, leafId: number) => void;
   onActivateLocalAgent: () => void;
+  /** Kill and respawn the active terminal's shell (manual recovery). */
+  onRestartTerminal: () => void;
+  /** Active tab is a terminal with a live leaf to restart. */
+  canRestartTerminal: boolean;
   onOpenSettings: () => void;
   searchTarget: SearchTarget;
   searchRef: RefObject<SearchInlineHandle | null>;
@@ -81,6 +86,8 @@ export function Header({
   canSplit,
   onActivateAgent,
   onActivateLocalAgent,
+  onRestartTerminal,
+  canRestartTerminal,
   onOpenSettings,
   searchTarget,
   searchRef,
@@ -120,6 +127,19 @@ export function Header({
       title="Settings"
     >
       <HugeiconsIcon icon={Settings01Icon} size={15} strokeWidth={1.75} />
+    </Button>
+  );
+
+  const restartButton = (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+      onClick={onRestartTerminal}
+      disabled={!canRestartTerminal}
+      title="Restart terminal (kill and respawn the shell)"
+    >
+      <HugeiconsIcon icon={RefreshIcon} size={16} strokeWidth={1.75} />
     </Button>
   );
 
@@ -184,10 +204,15 @@ export function Header({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {!IS_MAC && <NotificationBell
-            onActivate={onActivateAgent}
-            onActivateLocal={onActivateLocalAgent}
-          />}
+        {!IS_MAC && (
+          <>
+            <NotificationBell
+              onActivate={onActivateAgent}
+              onActivateLocal={onActivateLocalAgent}
+            />
+            {restartButton}
+          </>
+        )}
       </div>
 
       {!IS_MAC && <span className="mx-1 h-5 w-px shrink-0 bg-border" />}
@@ -225,6 +250,7 @@ export function Header({
             onActivate={onActivateAgent}
             onActivateLocal={onActivateLocalAgent}
           />
+          {restartButton}
           {settingsButton}
         </>
       )}

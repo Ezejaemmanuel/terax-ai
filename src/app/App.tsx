@@ -1200,6 +1200,14 @@ export default function App() {
     focusInput(null);
   }, [openPanel, focusInput]);
 
+  // Manual escape hatch for a wedged terminal: kill the child and spawn a fresh
+  // ConPTY in the same pane. Covers a hung shell, a corrupted TUI, a dead SSH,
+  // or the Windows ConPTY-close stall that can briefly blank a terminal.
+  const onRestartTerminal = useCallback(() => {
+    if (activeLeafId === null || !activeTerminalTab) return;
+    void respawnSession(activeLeafId, activeTerminalTab.cwd);
+  }, [activeLeafId, activeTerminalTab]);
+
   const handleLeafExit = useCallback(
     (leafId: number, _code: number) => {
       const all = tabsRef.current;
@@ -1489,6 +1497,8 @@ export default function App() {
             }
             onActivateAgent={onActivateAgent}
             onActivateLocalAgent={onActivateLocalAgent}
+            onRestartTerminal={onRestartTerminal}
+            canRestartTerminal={activeLeafId !== null}
             onOpenSettings={() => void openSettingsWindow()}
             searchTarget={searchTarget}
             searchRef={searchInlineRef}
