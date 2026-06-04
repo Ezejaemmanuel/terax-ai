@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useUpdater } from "@/modules/updater";
+import { useUpdaterContext } from "@/modules/updater/UpdaterContext";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getName, getVersion } from "@tauri-apps/api/app";
@@ -24,7 +24,7 @@ export function AboutSection() {
   const [version, setVersion] = useState("");
   const [name, setName] = useState("Terax");
   const [build, setBuild] = useState("");
-  const { status, check, install } = useUpdater({ autoCheck: false });
+  const { status, check, install } = useUpdaterContext();
   const checking = status.kind === "checking";
   const downloading = status.kind === "downloading";
   const available = status.kind === "available";

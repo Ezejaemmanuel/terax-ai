@@ -8,6 +8,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setTerminalsGroupByFolder } from "@/modules/settings/store";
 import type { Tab, TerminalTab } from "@/modules/tabs/lib/useTabs";
 import {
+  Add01Icon,
   Cancel01Icon,
   ComputerTerminal02Icon,
   Copy01Icon,
@@ -33,6 +34,8 @@ type Props = {
   onTogglePin: (id: number) => void;
   /** Move a terminal within the shared tab order. gap is an index into `tabs`. */
   onReorder: (fromId: number, toGapIndex: number) => void;
+  /** Open a new terminal inside a specific folder group. */
+  onNewInFolder?: (cwd: string) => void;
 };
 
 function cwdBasename(cwd?: string): string {
@@ -90,6 +93,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   onClose,
   onTogglePin,
   onReorder,
+  onNewInFolder,
 }: Props) {
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
@@ -311,7 +315,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
             {groupByFolder(terminalTabs).map((group) => (
               <div key={group.key}>
                 <div
-                  className="flex items-center gap-1.5 px-3 pb-1 pt-2.5"
+                  className="group/folder flex items-center gap-1.5 px-3 pb-1 pt-2.5"
                   title={group.path ?? undefined}
                 >
                   <HugeiconsIcon
@@ -326,6 +330,16 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                   <span className="text-[10px] tabular-nums text-muted-foreground/40">
                     {group.tabs.length}
                   </span>
+                  {onNewInFolder && group.path && (
+                    <button
+                      type="button"
+                      title={`New terminal in ${group.label}`}
+                      onClick={() => onNewInFolder(group.path!)}
+                      className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
+                    >
+                      <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={2} />
+                    </button>
+                  )}
                 </div>
                 {group.tabs.map((tab, i) =>
                   renderTab(tab, i === group.tabs.length - 1, group.key),

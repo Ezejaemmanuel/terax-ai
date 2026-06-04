@@ -105,6 +105,7 @@ import {
   writeThemeFile,
 } from "@/modules/theme/themeFiles";
 import { UpdaterDialog } from "@/modules/updater";
+import { UpdaterProvider } from "@/modules/updater/UpdaterContext";
 import {
   currentWorkspaceEnv,
   getWslHome,
@@ -1645,6 +1646,10 @@ export default function App() {
                   onClose={handleClose}
                   onTogglePin={toggleTabPin}
                   onReorder={reorderTab}
+                  onNewInFolder={(cwd) => {
+                    const tabId = newTab(cwd);
+                    setActiveId(tabId);
+                  }}
                 />
               </ResizablePanel>
             </ResizablePanelGroup>
@@ -1768,5 +1773,9 @@ export default function App() {
     </ThemeProvider>
   );
 
-  return <AiComposerProvider>{shell}</AiComposerProvider>;
+  return (
+    <AiComposerProvider>
+      <UpdaterProvider>{shell}</UpdaterProvider>
+    </AiComposerProvider>
+  );
 }

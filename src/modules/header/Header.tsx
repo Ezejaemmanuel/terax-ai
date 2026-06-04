@@ -6,8 +6,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WindowControls } from "@/components/WindowControls";
-import { IS_MAC, KEY_SEP, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
+import { IS_MAC, IS_WINDOWS, KEY_SEP, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useUpdaterContext } from "@/modules/updater/UpdaterContext";
 import {
   getBindingTokens,
   SHORTCUTS,
@@ -17,6 +18,7 @@ import type { Tab } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
 import { NotificationBell } from "@/modules/agents";
 import {
+  ArrowUp01Icon,
   GridViewIcon,
   LayoutTwoColumnIcon,
   LayoutTwoRowIcon,
@@ -117,6 +119,27 @@ export function Header({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  const { status, hasUpdate, install, check } = useUpdaterContext();
+  const updateReady = status.kind === "available";
+
+  const updateBadge =
+    IS_WINDOWS && hasUpdate ? (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="relative h-7 shrink-0 gap-1 rounded-md px-2 text-[11px] font-medium text-amber-500 hover:bg-amber-500/10 hover:text-amber-400"
+        onClick={() => {
+          if (updateReady) void install();
+          else void check({ manual: true });
+        }}
+        title="Update available — click to install"
+      >
+        <HugeiconsIcon icon={ArrowUp01Icon} size={13} strokeWidth={2} />
+        Update
+        <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-amber-500" />
+      </Button>
+    ) : null;
 
   const settingsButton = (
     <Button
@@ -255,7 +278,12 @@ export function Header({
         </>
       )}
 
-      {!IS_MAC && settingsButton}
+      {!IS_MAC && (
+        <>
+          {updateBadge}
+          {settingsButton}
+        </>
+      )}
 
       {USE_CUSTOM_WINDOW_CONTROLS && (
         <>

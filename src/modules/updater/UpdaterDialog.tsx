@@ -10,7 +10,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
-import { useUpdater } from "./useUpdater";
+import { useUpdaterContext } from "./UpdaterContext";
 
 type DistroKey = "arch" | "debian" | "fedora";
 
@@ -38,7 +38,7 @@ function formatBytes(n: number): string {
 }
 
 export function UpdaterDialog() {
-  const { status, install, dismiss } = useUpdater();
+  const { status, install, dismiss } = useUpdaterContext();
   const [copied, setCopied] = useState(false);
   const [distro, setDistro] = useState<DistroKey>("arch");
   const manualVersion =
