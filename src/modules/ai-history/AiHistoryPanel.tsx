@@ -155,14 +155,10 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     async (cwd: string) => {
       if (openingNewCwd) return;
 
-      // If there's already a terminal tab at this CWD with the tool running,
-      // just switch to it rather than spawning a duplicate.
-      const { tabId: existingTabId } = liveStatusForCwd(cwd);
-      if (existingTabId != null) {
-        setActiveId(existingTabId);
-        return;
-      }
-
+      // The "+" always starts a NEW session — multiple Claude sessions per
+      // folder are supported (each terminal persists its own session id), so we
+      // intentionally do not dedupe to an existing terminal here. Use a history
+      // row (openSession) to jump back to a specific past session instead.
       setOpeningNewCwd(cwd);
       try {
         // Ensure agent-status hooks exist before the agent prints anything.
@@ -189,7 +185,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         setOpeningNewCwd(null);
       }
     },
-    [openingNewCwd, newTab, setActiveId, tool, liveStatusForCwd, addFolder, projects, setTabTitle],
+    [openingNewCwd, newTab, setActiveId, tool, addFolder, projects, setTabTitle],
   );
 
   // Memoize status for all projects.
