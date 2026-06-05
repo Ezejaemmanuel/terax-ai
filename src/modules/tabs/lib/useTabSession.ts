@@ -11,7 +11,7 @@ const PERIODIC_SAVE_MS = 20_000;
 function serializeTab(t: Tab): PersistedTab | null {
   switch (t.kind) {
     case "terminal":
-      return { kind: "terminal", id: t.id, title: t.title, cwd: t.cwd, pinned: t.pinned, color: t.color };
+      return { kind: "terminal", id: t.id, title: t.title, cwd: t.cwd, pinned: t.pinned, color: t.color, claudeSession: t.claudeSession, claudeSessionId: t.claudeSessionId };
     case "editor":
       return { kind: "editor", id: t.id, title: t.title, path: t.path, pinned: t.pinned, color: t.color };
     case "preview":
@@ -43,6 +43,8 @@ function buildTabFromPersisted(p: PersistedTab, nextId: () => number): Tab {
         activeLeafId: leafId,
         pinned: p.pinned,
         color: p.color,
+        claudeSession: p.claudeSession,
+        claudeSessionId: p.claudeSessionId,
       };
     }
     case "editor":

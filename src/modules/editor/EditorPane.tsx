@@ -8,7 +8,8 @@ import {
 import { keymap } from "@codemirror/view";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { EDITOR_THEME_EXT } from "./lib/themes";
+import { getEditorThemeExtension } from "./lib/themes";
+import { useCustomEditorThemesStore } from "./useCustomEditorThemesStore";
 import {
   forwardRef,
   useCallback,
@@ -16,7 +17,9 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
+import { MarkdownContent } from "@/modules/markdown";
 import { Prec, type Extension } from "@codemirror/state";
 import { vim } from "@replit/codemirror-vim";
 import {
@@ -99,6 +102,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     reloadRef.current = reload;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
     const editorThemeId = usePreferencesStore((s) => s.editorTheme);
+    const customEditorThemes = useCustomEditorThemesStore((s) => s.customEditorThemes);
     const vimMode = usePreferencesStore((s) => s.vimMode);
     const languageRef = useRef<string | null>(null);
     const apiKeyRef = useRef<string | null>(null);
@@ -130,7 +134,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         unsubPrefs();
       };
     }, []);
-    const themeExt = EDITOR_THEME_EXT[editorThemeId] ?? EDITOR_THEME_EXT.atomone;
+    const themeExt = getEditorThemeExtension(editorThemeId, customEditorThemes, path);
 
     // Stabilize save + onSaved via refs so the extensions array never changes
     // identity — a new identity makes @uiw/react-codemirror reconfigure the
@@ -144,6 +148,44 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
 
     const pathRef = useRef(path);
     pathRef.current = path;
+
+    // Markdown files render as a full-pane preview by default; a toolbar
+    // toggle drops to the raw source. CodeMirror stays mounted underneath the
+    // preview overlay so git gutter, search and language all keep working and
+    // the editor state survives toggling.
+    const isMarkdown = /\.(md|markdown)$/i.test(path);
+    const [showSource, setShowSource] = useState(false);
+    // Reset to preview whenever the open file changes.
+    useEffect(() => {
+      setShowSource(false);
+    }, [path]);
+    // `doc.content` only changes on load/save, not per keystroke, so mirror the
+    // live buffer here to render edits the moment the user flips to preview.
+    const liveContentRef = useRef("");
+    const [previewSource, setPreviewSource] = useState("");
+    // Seed the preview from the document *during render* (React's "adjust state
+    // while rendering" pattern) rather than in a post-paint effect, so the
+    // first preview frame is never empty. `doc.content` only changes on
+    // load/reload — exactly when the preview should reset — so the guard keeps
+    // this from looping and never clobbers unsaved edits (autosave doesn't
+    // touch `doc.content`).
+    const seededContentRef = useRef<string | null>(null);
+    if (doc.status === "ready" && seededContentRef.current !== doc.content) {
+      seededContentRef.current = doc.content;
+      liveContentRef.current = doc.content;
+      setPreviewSource(doc.content);
+    }
+    const handleChange = useCallback(
+      (next: string) => {
+        liveContentRef.current = next;
+        onChange(next);
+      },
+      [onChange],
+    );
+    const togglePreview = useCallback(() => {
+      if (showSource) setPreviewSource(liveContentRef.current);
+      setShowSource(!showSource);
+    }, [showSource]);
 
     // Load the git baseline (index content) so the change gutter can mark
     // added/modified/deleted lines. Best-effort: outside a repo, untracked, or
@@ -404,26 +446,47 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
 
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <CodeMirror
-          ref={cmRef}
-          value={doc.content}
-          onChange={onChange}
-          theme={themeExt}
-          extensions={extensions}
-          height="100%"
-          className="flex-1 min-h-0 overflow-hidden"
-          basicSetup={{
-            lineNumbers: true,
-            highlightActiveLineGutter: true,
-            foldGutter: true,
-            bracketMatching: true,
-            closeBrackets: true,
-            autocompletion: true,
-            highlightActiveLine: true,
-            highlightSelectionMatches: true,
-            searchKeymap: true,
-          }}
-        />
+        {isMarkdown && (
+          <div className="flex shrink-0 items-center justify-between border-b border-border/60 px-3 py-1.5 text-[11px]">
+            <span className="text-muted-foreground">
+              {showSource ? "Editing source" : "Markdown preview"}
+            </span>
+            <button
+              type="button"
+              onClick={togglePreview}
+              className="rounded px-2 py-0.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              {showSource ? "Show preview" : "Edit source"}
+            </button>
+          </div>
+        )}
+        <div className="relative min-h-0 flex-1">
+          <CodeMirror
+            ref={cmRef}
+            value={doc.content}
+            onChange={handleChange}
+            theme={themeExt}
+            extensions={extensions}
+            height="100%"
+            className="h-full min-h-0 overflow-hidden"
+            basicSetup={{
+              lineNumbers: true,
+              highlightActiveLineGutter: true,
+              foldGutter: true,
+              bracketMatching: true,
+              closeBrackets: true,
+              autocompletion: true,
+              highlightActiveLine: true,
+              highlightSelectionMatches: true,
+              searchKeymap: true,
+            }}
+          />
+          {isMarkdown && !showSource && (
+            <div className="absolute inset-0 overflow-auto bg-background px-6 py-4">
+              <MarkdownContent content={previewSource} />
+            </div>
+          )}
+        </div>
       </div>
     );
   },

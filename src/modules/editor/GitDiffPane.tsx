@@ -16,7 +16,8 @@ import {
   commitDiffKey,
 } from "./lib/diffCache";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
-import { EDITOR_THEME_EXT } from "./lib/themes";
+import { getEditorThemeExtension } from "./lib/themes";
+import { useCustomEditorThemesStore } from "./useCustomEditorThemesStore";
 
 type WorkingSource = {
   kind: "working";
@@ -128,7 +129,8 @@ function loadStateFromCache(
 export function GitDiffPane({ source, chipLabel, active }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const editorThemeId = usePreferencesStore((s) => s.editorTheme);
-  const themeExt = EDITOR_THEME_EXT[editorThemeId] ?? EDITOR_THEME_EXT.atomone;
+  const customEditorThemes = useCustomEditorThemesStore((s) => s.customEditorThemes);
+  const themeExt = getEditorThemeExtension(editorThemeId, customEditorThemes, source.path);
   const [state, setState] = useState<LoadState>(() =>
     active ? loadStateFromCache(source) : { kind: "idle" },
   );

@@ -57,7 +57,7 @@ export type Preferences = {
   backgroundOpacity: number;
   backgroundBlur: number;
   defaultModelId: ModelId;
-  editorTheme: EditorThemeId;
+  editorTheme: string;
   customInstructions: string;
   autostart: boolean;
   restoreWindowState: boolean;
@@ -237,7 +237,7 @@ export async function loadPreferences(): Promise<Preferences> {
         : DEFAULT_PREFERENCES.defaultModelId;
     })(),
     editorTheme:
-      get<EditorThemeId>(KEY_EDITOR_THEME) ?? DEFAULT_PREFERENCES.editorTheme,
+      get<string>(KEY_EDITOR_THEME) ?? DEFAULT_PREFERENCES.editorTheme,
     customInstructions:
       get<string>(KEY_CUSTOM_INSTRUCTIONS) ??
       DEFAULT_PREFERENCES.customInstructions,
@@ -375,7 +375,7 @@ export async function setDefaultModel(value: ModelId): Promise<void> {
   await writePref(KEY_DEFAULT_MODEL, value);
 }
 
-export async function setEditorTheme(value: EditorThemeId): Promise<void> {
+export async function setEditorTheme(value: string): Promise<void> {
   await writePref(KEY_EDITOR_THEME, value);
 }
 

@@ -1,6 +1,7 @@
 import type { Tab } from "@/modules/tabs";
 import { hasLeaf, leafIdForPty } from "@/modules/terminal";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
 import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import { maybeTriggerManagedReview } from "../lib/review";
@@ -11,11 +12,13 @@ import { useAgentStore } from "../store/agentStore";
 import { useManagedAgentsStore } from "../store/managedAgentsStore";
 
 type Activate = (tabId: number, leafId: number) => void;
+type BindSession = (tabId: number, sessionId: string) => void;
 type Ctx = {
   tabs: Tab[];
   activeId: number;
   focused: boolean;
   onActivate: Activate;
+  onBindSession: BindSession;
 };
 
 function tabInfo(
@@ -57,6 +60,13 @@ function route(
   });
 }
 
+// Lifecycle breadcrumbs to terax.log (disk). Only low-frequency events
+// (started / session / exited) are logged — working/attention/finished fire
+// every turn and would spam the log.
+function agentLog(message: string): void {
+  void invoke("agent_log", { level: "info", message }).catch(() => {});
+}
+
 function handleSignal(sig: AgentSignal, ctx: Ctx): void {
   const leafId = leafIdForPty(sig.id);
   console.debug("[agent] recv", sig, "→ leafId", leafId);
@@ -74,6 +84,9 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
         return;
       }
       console.debug("[agent] start session leaf", leafId, "tab", info.tabId, "agent", sig.agent);
+      agentLog(
+        `agent started: ${sig.agent ?? "agent"} (leaf ${leafId}, tab ${info.tabId}, pty ${sig.id})`,
+      );
       store.start(leafId, info.tabId, sig.agent ?? "agent");
       return;
     }
@@ -99,6 +112,7 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
       return;
     }
     case "exited":
+      agentLog(`agent exited (leaf ${leafId}, pty ${sig.id})`);
       store.finish(leafId);
       useManagedAgentsStore.getState().remove(leafId);
       return;
@@ -110,7 +124,13 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
         return;
       }
       console.debug("[agent] link session", sig.session, "→ tab", info.tabId);
+      agentLog(
+        `linked Claude session ${sig.session} -> tab ${info.tabId} (leaf ${leafId})`,
+      );
       useSessionTabStore.getState().linkSession(sig.session, info.tabId);
+      // Persist the exact id on the tab, auto-flag it as a Claude session (so
+      // manual launches survive restart), and resolve its title for the label.
+      ctx.onBindSession(info.tabId, sig.session);
       return;
     }
   }
@@ -120,14 +140,16 @@ export function AgentNotificationsBridge({
   tabs,
   activeId,
   onActivate,
+  onBindSession,
 }: {
   tabs: Tab[];
   activeId: number;
   onActivate: Activate;
+  onBindSession: BindSession;
 }) {
   const focused = useWindowFocus();
-  const ctxRef = useRef<Ctx>({ tabs, activeId, focused, onActivate });
-  ctxRef.current = { tabs, activeId, focused, onActivate };
+  const ctxRef = useRef<Ctx>({ tabs, activeId, focused, onActivate, onBindSession });
+  ctxRef.current = { tabs, activeId, focused, onActivate, onBindSession };
 
   useEffect(() => {
     let alive = true;

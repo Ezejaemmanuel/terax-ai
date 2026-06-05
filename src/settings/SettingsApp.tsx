@@ -3,6 +3,7 @@ import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { ensureCustomEditorThemesInit } from "@/modules/editor/useCustomEditorThemesStore";
 import {
   AiScanIcon,
   InformationCircleIcon,
@@ -57,6 +58,7 @@ export function SettingsApp() {
 
   useEffect(() => {
     void init();
+    void ensureCustomEditorThemesInit();
   }, [init]);
 
   useEffect(() => {

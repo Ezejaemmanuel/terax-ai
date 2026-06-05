@@ -11,6 +11,10 @@ export type PersistedTab = {
   url?: string;
   pinned?: boolean;
   color?: string;
+  /** Terminal launched as a Claude session — resumed via `claude --resume`. */
+  claudeSession?: boolean;
+  /** Exact Claude session id bound to this terminal, for precise resume. */
+  claudeSessionId?: string;
 };
 
 export type PersistedSession = {

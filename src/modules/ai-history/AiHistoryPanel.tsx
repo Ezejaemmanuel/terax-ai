@@ -32,6 +32,7 @@ import {
 import { useSessionTabStore } from "./lib/sessionTabStore";
 import { useActiveFolderStore } from "@/modules/terminals/activeFolderStore";
 import { agentStatusStyle } from "@/modules/agents/lib/statusLabel";
+import { watchForHookMarker } from "@/modules/agents/lib/hookWatchdog";
 import type { AgentStatus } from "@/modules/agents/lib/types";
 
 type Props = {
@@ -171,7 +172,8 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         setTabTitle(tabId, tool === "claude" ? "Claude Code" : "Codex");
         const leafId = tabId + 1;
         const command = tool === "claude" ? "claude --permission-mode auto" : "codex";
-        await writeWhenReady(leafId, command);
+        const sent = await writeWhenReady(leafId, command);
+        if (sent && tool === "claude") watchForHookMarker(leafId);
         addFolder(cwd, projects.find((p) => p.fullPath === cwd)?.name ?? cwd.split(/[\\/]/).pop() ?? cwd);
       } finally {
         setOpeningNewCwd(null);
@@ -233,6 +235,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         // A timeout leaves the tab open (user can retry manually) but we don't
         // lock the session to a tab that has no Claude process.
         if (sent) {
+          if (tool === "claude") watchForHookMarker(leafId);
           setMapping(session.id, tabId, session.title);
           addFolder(session.cwd, projects.find((p) => p.fullPath === session.cwd)?.name ?? session.cwd.split(/[\\/]/).pop() ?? session.cwd);
         }

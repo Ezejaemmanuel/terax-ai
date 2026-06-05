@@ -184,6 +184,125 @@ pub async fn ai_history_claude() -> Vec<AiProject> {
     .unwrap_or_default()
 }
 
+// Lightweight cwd-only read: stops at the first record carrying a `cwd` field
+// (present on every user/assistant/attachment record), so we don't pay for
+// title extraction when only resolving which folder a session belongs to.
+fn read_claude_session_cwd(jsonl_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(jsonl_path).ok()?;
+    for line in content.lines().take(30) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+            if !c.is_empty() {
+                return Some(c.to_string());
+            }
+        }
+    }
+    None
+}
+
+// Normalize a path for comparison: forward slashes, no trailing slash, and
+// case-folded on Windows where the filesystem is case-insensitive.
+fn norm_cwd(s: &str) -> String {
+    let n = s.replace('\\', "/");
+    let n = n.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        n.to_lowercase()
+    } else {
+        n
+    }
+}
+
+/// Most reliable session tracker: scan Claude's own on-disk session store
+/// (`~/.claude/projects/*/*.jsonl`) and return the id of the most-recently
+/// modified session whose recorded cwd matches `cwd`. Matching on the cwd
+/// embedded in each file (rather than reconstructing Claude's directory-name
+/// encoding) keeps this correct across platforms. Returns None when the folder
+/// has no Claude history yet — the caller then starts a fresh session.
+#[tauri::command]
+pub async fn claude_latest_session(cwd: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir()?;
+        let projects_dir = home.join(".claude").join("projects");
+        if !projects_dir.exists() {
+            return None;
+        }
+        let target = norm_cwd(&cwd);
+        let mut best: Option<(String, String)> = None; // (mtime_str, session_id)
+        for project_entry in fs::read_dir(&projects_dir).ok()?.filter_map(|e| e.ok()) {
+            let project_dir = project_entry.path();
+            if !project_dir.is_dir() {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&project_dir) else {
+                continue;
+            };
+            for s_entry in entries.filter_map(|e| e.ok()) {
+                let s_path = s_entry.path();
+                if s_path.is_dir()
+                    || s_path.extension().and_then(|e| e.to_str()) != Some("jsonl")
+                {
+                    continue;
+                }
+                let Some(id) = s_path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let Some(c) = read_claude_session_cwd(&s_path) else {
+                    continue;
+                };
+                if norm_cwd(&c) != target {
+                    continue;
+                }
+                let mtime = file_mtime_ms_str(&s_path);
+                if best.as_ref().is_none_or(|(bm, _)| mtime > *bm) {
+                    best = Some((mtime, id.to_string()));
+                }
+            }
+        }
+        let result = best.map(|(_, id)| id);
+        match &result {
+            Some(id) => log::info!("[agent] resume: latest session for cwd={cwd} -> {id}"),
+            None => log::info!("[agent] resume: no prior Claude session for cwd={cwd}; will start fresh"),
+        }
+        result
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Resolve a Claude session id to its conversation title (the ai-title record,
+/// or the first user message as a fallback). Used to label a terminal tab once
+/// its session id is bound via the agent hook. Looks the file up directly as
+/// `~/.claude/projects/*/<session_id>.jsonl`, so it's cheap. Returns None when
+/// the session has no title yet (brand-new session before the first turn).
+#[tauri::command]
+pub async fn claude_session_title(session_id: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir()?;
+        let projects_dir = home.join(".claude").join("projects");
+        if !projects_dir.exists() {
+            return None;
+        }
+        let file_name = format!("{session_id}.jsonl");
+        for project_entry in fs::read_dir(&projects_dir).ok()?.filter_map(|e| e.ok()) {
+            let candidate = project_entry.path().join(&file_name);
+            if candidate.is_file() {
+                let (title, _) = read_claude_session_info(&candidate);
+                if let Some(ref t) = title {
+                    log::info!("[agent] session title for {session_id}: {t}");
+                }
+                return title;
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 // Build a map of session_id → file path by scanning the Codex sessions directory
 // once rather than doing an O(n) walk per session lookup.
 fn build_codex_file_index(sessions_dir: &Path) -> HashMap<String, PathBuf> {

@@ -11,7 +11,8 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef } from "react";
 import { buildSharedExtensions, languageCompartment } from "./lib/extensions";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
-import { EDITOR_THEME_EXT } from "./lib/themes";
+import { getEditorThemeExtension } from "./lib/themes";
+import { useCustomEditorThemesStore } from "./useCustomEditorThemesStore";
 
 type Props = {
   path: string;
@@ -93,7 +94,8 @@ export function AiDiffPane({
 }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const editorThemeId = usePreferencesStore((s) => s.editorTheme);
-  const themeExt = EDITOR_THEME_EXT[editorThemeId] ?? EDITOR_THEME_EXT.atomone;
+  const customEditorThemes = useCustomEditorThemesStore((s) => s.customEditorThemes);
+  const themeExt = getEditorThemeExtension(editorThemeId, customEditorThemes, path);
 
   const initialLang = useMemo(() => resolveLanguageSync(path), [path]);
   const extensions = useMemo(

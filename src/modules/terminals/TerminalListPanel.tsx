@@ -15,6 +15,7 @@ import {
   Folder01Icon,
   FolderLibraryIcon,
   PinIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useState } from "react";
@@ -36,6 +37,8 @@ type Props = {
   onReorder: (fromId: number, toGapIndex: number) => void;
   /** Open a new terminal inside a specific folder group. */
   onNewInFolder?: (cwd: string) => void;
+  /** Open a new terminal in a folder group and launch Claude in it. */
+  onLaunchClaudeInFolder?: (cwd: string) => void;
 };
 
 function cwdBasename(cwd?: string): string {
@@ -94,11 +97,13 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   onTogglePin,
   onReorder,
   onNewInFolder,
+  onLaunchClaudeInFolder,
 }: Props) {
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
   );
   const tabTitles = useSessionTabStore((s) => s.tabTitles);
+  const sessionIds = useSessionTabStore((s) => s.sessionIds);
   const grouped = usePreferencesStore((s) => s.terminalsGroupByFolder);
 
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.kind === "terminal");
@@ -155,9 +160,20 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   const renderTab = (tab: TerminalTab, isLastInScope: boolean, scopeKey: string) => {
     const isActive = tab.id === activeId;
     const agentSession = agentSessions[tab.activeLeafId];
-    const sessionTitle = tabTitles.get(tab.id);
+    // Live session title (freshest) → persisted Claude tab title (survives
+    // restart) → folder name. The middle fallback lets a restored Claude
+    // terminal show its conversation title before the hook re-links.
+    const liveTitle = tabTitles.get(tab.id);
+    const persistedTitle = tab.claudeSessionId ? tab.title : undefined;
+    const sessionTitle = liveTitle ?? persistedTitle;
     const label = sessionTitle ?? cwdBasename(tab.cwd);
     const sublabel = sessionTitle ? cwdBasename(tab.cwd) : null;
+    // Short id of the bound Claude session (first segment of the UUID) — shown
+    // so a manually-launched `claude` terminal is identifiable, without dumping
+    // the full ugly UUID into the title. Falls back to the persisted id so the
+    // badge is present immediately after a restart, before the hook re-links.
+    const boundSid = sessionIds.get(tab.id) ?? tab.claudeSessionId;
+    const shortSid = boundSid?.split("-")[0];
     const status = agentSession?.status;
     const lineBefore = dropInd && "beforeId" in dropInd && dropInd.beforeId === tab.id;
     const lineAfter =
@@ -222,8 +238,18 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                 />
               )}
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[11.5px] font-medium leading-tight">
-                  {label}
+                <span className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium leading-tight">
+                    {label}
+                  </span>
+                  {shortSid && (
+                    <span
+                      title={`Claude session ${boundSid}`}
+                      className="shrink-0 rounded bg-muted/60 px-1 font-mono text-[9px] leading-tight text-muted-foreground/70"
+                    >
+                      {shortSid}
+                    </span>
+                  )}
                 </span>
                 {sublabel && (
                   <span className="block truncate text-[10px] text-muted-foreground/60">
@@ -330,16 +356,31 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                   <span className="text-[10px] tabular-nums text-muted-foreground/40">
                     {group.tabs.length}
                   </span>
-                  {onNewInFolder && group.path && (
-                    <button
-                      type="button"
-                      title={`New terminal in ${group.label}`}
-                      onClick={() => onNewInFolder(group.path!)}
-                      className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
-                    >
-                      <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={2} />
-                    </button>
-                  )}
+                  {group.path &&
+                  (onNewInFolder || onLaunchClaudeInFolder) ? (
+                    <span className="ml-auto flex shrink-0 items-center gap-0.5">
+                      {onLaunchClaudeInFolder && (
+                        <button
+                          type="button"
+                          title={`Launch Claude in ${group.label}`}
+                          onClick={() => onLaunchClaudeInFolder(group.path!)}
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
+                        >
+                          <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
+                        </button>
+                      )}
+                      {onNewInFolder && (
+                        <button
+                          type="button"
+                          title={`New terminal in ${group.label}`}
+                          onClick={() => onNewInFolder(group.path!)}
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
+                        >
+                          <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={2} />
+                        </button>
+                      )}
+                    </span>
+                  ) : null}
                 </div>
                 {group.tabs.map((tab, i) =>
                   renderTab(tab, i === group.tabs.length - 1, group.key),

@@ -15,7 +15,6 @@ import {
   setEditorTheme as persistEditorTheme,
   setTheme as persistTheme,
   setThemeId as persistThemeId,
-  type EditorThemeId,
   type ThemePref,
 } from "@/modules/settings/store";
 import { applyTheme, clearTheme } from "./applyTheme";
@@ -150,7 +149,7 @@ export function ThemeProvider({ children, defaultMode = "system" }: ThemeProvide
       (EDITOR_THEMES as readonly string[]).includes(editorPair)
     ) {
       lastEditorPairRef.current = editorPair;
-      void persistEditorTheme(editorPair as EditorThemeId);
+      void persistEditorTheme(editorPair);
     }
   }, [themeId, resolvedMode, customThemes]);
 

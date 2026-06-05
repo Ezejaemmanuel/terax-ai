@@ -16,8 +16,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { AgentNotificationsBridge } from "@/modules/agents";
+import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import { firePendingReviewForSession } from "@/modules/agents/lib/review";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
+import { watchForHookMarker } from "@/modules/agents/lib/hookWatchdog";
 import { Toaster } from "@/components/ui/sonner";
 import {
   AgentRunBridge,
@@ -65,6 +67,7 @@ import { MarkdownStack } from "@/modules/markdown";
 import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { ensureCustomEditorThemesInit } from "@/modules/editor/useCustomEditorThemesStore";
 import { onKeysChanged, setThemeId as persistThemeId } from "@/modules/settings/store";
 import {
   ShortcutsDialog,
@@ -221,6 +224,11 @@ export default function App() {
 
   // Prevents double-click from spawning duplicate terminals via FolderStrip.
   const openingFromFolderRef = useRef(false);
+
+  // Leaf ids of Claude terminals we've already started a command in (fresh
+  // launches + restored sessions), so the restore effect resumes each exactly
+  // once and never double-fires into a terminal that's already running Claude.
+  const startedClaudeLeavesRef = useRef<Set<number>>(new Set());
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -473,11 +481,79 @@ export default function App() {
   const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   useEffect(() => {
     void initPrefs();
+    void ensureCustomEditorThemesInit();
   }, [initPrefs]);
   useEffect(() => {
     if (!prefsHydrated) return;
     setSelectedModelId(prefDefaultModel);
   }, [prefsHydrated, prefDefaultModel, setSelectedModelId]);
+
+  // Start (or resume) Claude in a terminal leaf. The session id is resolved
+  // from Claude's own on-disk session store for this folder — the authoritative
+  // source — so we resume the exact conversation via `claude --resume <id>`.
+  // When the folder has no Claude history yet we start a fresh `claude`.
+  const startClaudeInLeaf = useCallback(
+    async (
+      cwd: string | undefined,
+      leafId: number,
+      knownSessionId?: string,
+    ) => {
+      const hooksReady = invoke("agent_enable_claude_hooks").catch((e) => {
+        // Surface install failure into terax.log — the tracker can't work
+        // without the hooks, so a release build needs this on disk.
+        void invoke("agent_log", {
+          level: "error",
+          message: `hook install failed before claude launch: ${String(e)}`,
+        }).catch(() => {});
+      });
+      // Prefer the exact session bound to this terminal (restored from disk).
+      // Only fall back to the folder's latest session when we don't have one.
+      const sessionId =
+        knownSessionId ??
+        (cwd
+          ? await invoke<string | null>("claude_latest_session", { cwd }).catch(
+              () => null,
+            )
+          : null);
+      await hooksReady;
+      // Fresh launches start in auto permission mode (matching the AI-History
+      // "new session" path). On --resume Claude restores the session's own
+      // settings, so the flag is only meaningful for a fresh start.
+      const cmd = sessionId
+        ? `claude --resume ${sessionId}`
+        : "claude --permission-mode auto";
+      void invoke("agent_log", {
+        level: "info",
+        message: `launching claude in leaf ${leafId} (${
+          sessionId ? `resume ${sessionId}` : "fresh session"
+        }) cwd=${cwd ?? "?"}`,
+      }).catch(() => {});
+      await writeCommandToSessionWhenReady(leafId, cmd);
+      watchForHookMarker(leafId);
+    },
+    [],
+  );
+
+  // Resume restored Claude terminals. A terminal launched via the sidebar
+  // "Launch Claude" button is flagged `claudeSession` and persisted; when the
+  // session is restored (app relaunch) its shell comes back empty, so we resume
+  // the folder's conversation. Fresh launches are pre-marked in
+  // startedClaudeLeavesRef, so they're skipped here.
+  useEffect(() => {
+    for (const t of tabs) {
+      if (t.kind !== "terminal" || !t.claudeSession) continue;
+      const leafId = t.activeLeafId;
+      if (startedClaudeLeavesRef.current.has(leafId)) continue;
+      startedClaudeLeavesRef.current.add(leafId);
+      // Re-link the persisted session id immediately so the badge + "jump to
+      // running terminal" matching work before the resumed claude re-fires its
+      // hook. Resume the exact session when we have its id.
+      if (t.claudeSessionId) {
+        useSessionTabStore.getState().linkSession(t.claudeSessionId, t.id);
+      }
+      void startClaudeInLeaf(t.cwd, leafId, t.claudeSessionId);
+    }
+  }, [tabs, startClaudeInLeaf]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
@@ -1201,6 +1277,34 @@ export default function App() {
     focusInput(null);
   }, [openPanel, focusInput]);
 
+  // Bind a discovered Claude session id to its terminal tab. Persists the exact
+  // id (so restart resumes this precise conversation) and marks the tab as a
+  // Claude session so a *manually*-launched `claude` survives restart too — not
+  // just AI-icon launches. Also resolves the conversation title and applies it
+  // to the tab (persisted) + the live terminal-list label.
+  const bindClaudeSession = useCallback(
+    (tabId: number, sessionId: string) => {
+      updateTab(tabId, { claudeSessionId: sessionId, claudeSession: true });
+      // The `session` signal fires once, but a brand-new conversation has no
+      // ai-title for the first turn or two. Poll a few times so the label fills
+      // in shortly after, then give up (a restart would re-bind and re-fetch).
+      const fetchTitle = (attempt: number) => {
+        void invoke<string | null>("claude_session_title", { sessionId })
+          .then((title) => {
+            if (title) {
+              useSessionTabStore.getState().setTabTitle(tabId, title);
+              updateTab(tabId, { title });
+            } else if (attempt < 4) {
+              setTimeout(() => fetchTitle(attempt + 1), 15_000);
+            }
+          })
+          .catch(() => {});
+      };
+      fetchTitle(0);
+    },
+    [updateTab],
+  );
+
   // Manual escape hatch for a wedged terminal: kill the child and spawn a fresh
   // ConPTY in the same pane. Covers a hung shell, a corrupted TUI, a dead SSH,
   // or the Windows ConPTY-close stall that can briefly blank a terminal.
@@ -1321,13 +1425,23 @@ export default function App() {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        const hooksReady = invoke("agent_enable_claude_hooks").catch(() => {});
+        const hooksReady = invoke("agent_enable_claude_hooks").catch((e) => {
+          void invoke("agent_log", {
+            level: "error",
+            message: `hook install failed before managed-agent launch: ${String(e)}`,
+          }).catch(() => {});
+        });
         void (async () => {
           await hooksReady;
+          void invoke("agent_log", {
+            level: "info",
+            message: `launching managed claude in leaf ${leafId} (session ${sessionId}) cwd=${cwd ?? "?"}`,
+          }).catch(() => {});
           if (!(await writeCommandToSessionWhenReady(leafId, "claude"))) {
             useManagedAgentsStore.getState().remove(leafId);
             return;
           }
+          watchForHookMarker(leafId);
           const readBuf = () => {
             const term = terminalRefs.current.get(leafId);
             return term ? term.getBuffer(120) : null;
@@ -1650,6 +1764,18 @@ export default function App() {
                     const tabId = newTab(cwd);
                     setActiveId(tabId);
                   }}
+                  onLaunchClaudeInFolder={(cwd) => {
+                    const base =
+                      cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "shell";
+                    const { tabId, leafId } = newAgentTab(cwd, `claude · ${base}`, {
+                      claudeSession: true,
+                    });
+                    setActiveId(tabId);
+                    // Mark as started so the restore effect doesn't double-fire
+                    // into this leaf.
+                    startedClaudeLeavesRef.current.add(leafId);
+                    void startClaudeInLeaf(cwd, leafId);
+                  }}
                 />
               </ResizablePanel>
             </ResizablePanelGroup>
@@ -1672,6 +1798,7 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             onActivate={onActivateAgent}
+            onBindSession={bindClaudeSession}
           />
           <Toaster position="bottom-right" />
 

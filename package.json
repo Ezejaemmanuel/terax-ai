@@ -1,7 +1,7 @@
 {
   "name": "terax",
   "private": true,
-  "version": "0.7.13-jatique-45",
+  "version": "0.7.14-jatique-46",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -84,6 +84,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-resizable-panels": "^4.10.0",
+    "shiki": "^4.2.0",
     "sonner": "^2.0.7",
     "streamdown": "^2.5.0",
     "tailwind-merge": "^3.5.0",

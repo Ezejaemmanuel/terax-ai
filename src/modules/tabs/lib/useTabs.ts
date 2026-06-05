@@ -27,6 +27,12 @@ export type TerminalTab = {
   private?: boolean;
   pinned?: boolean;
   color?: string;
+  /** Launched as a Claude session — on restore it resumes via `claude --resume`. */
+  claudeSession?: boolean;
+  /** The exact Claude session id bound to this terminal (from the agent hook).
+   * Persisted so restore resumes this precise conversation, not just the
+   * folder's latest. */
+  claudeSessionId?: string;
 };
 
 export type EditorTab = {
@@ -147,6 +153,8 @@ export type TabPatch = Partial<{
   url: string;
   pinned: boolean;
   color: string | null;
+  claudeSession: boolean;
+  claudeSessionId: string;
 }>;
 
 function basename(path: string): string {
@@ -214,7 +222,11 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, []);
 
   const newAgentTab = useCallback(
-    (cwd: string | undefined, title: string) => {
+    (
+      cwd: string | undefined,
+      title: string,
+      opts?: { claudeSession?: boolean },
+    ) => {
       const tabId = nextIdRef.current++;
       const leafId = nextIdRef.current++;
       setTabs((t) => [
@@ -226,6 +238,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           cwd,
           paneTree: { kind: "leaf", id: leafId, cwd },
           activeLeafId: leafId,
+          claudeSession: opts?.claudeSession,
         },
       ]);
       setActiveId(tabId);
@@ -625,6 +638,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             ...x,
             ...(patch.title !== undefined && { title: patch.title }),
             ...(patch.cwd !== undefined && { cwd: patch.cwd }),
+            ...(patch.claudeSession !== undefined && {
+              claudeSession: patch.claudeSession,
+            }),
+            ...(patch.claudeSessionId !== undefined && {
+              claudeSessionId: patch.claudeSessionId,
+            }),
           };
         }
         if (x.kind === "preview") {

@@ -1,9 +1,8 @@
-import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { Streamdown } from "streamdown";
+import { MarkdownContent } from "./MarkdownContent";
 
 type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -21,8 +20,6 @@ type Props = {
   path: string;
   visible: boolean;
 };
-
-const components = { code: MarkdownCode };
 
 export function MarkdownPreviewPane({ path, visible }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
@@ -83,12 +80,7 @@ export function MarkdownPreviewPane({ path, visible }: Props) {
           </p>
         )}
         {status.kind === "ready" && (
-          <Streamdown
-            className="select-text prose-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-            components={components}
-          >
-            {status.content}
-          </Streamdown>
+          <MarkdownContent content={status.content} />
         )}
       </div>
     </div>

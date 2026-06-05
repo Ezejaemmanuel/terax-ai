@@ -3,6 +3,7 @@ import { create } from "zustand";
 type SessionTabState = {
   map: Map<string, number>;        // sessionId → tabId
   tabTitles: Map<number, string>;  // tabId → session title (for terminal list display)
+  sessionIds: Map<number, string>; // tabId → bound Claude session id (for the badge)
   setMapping: (sessionId: string, tabId: number, sessionTitle: string) => void;
   setTabTitle: (tabId: number, title: string) => void;
   linkSession: (sessionId: string, tabId: number) => void;
@@ -17,6 +18,7 @@ type SessionTabState = {
 export const useSessionTabStore = create<SessionTabState>((set, get) => ({
   map: new Map(),
   tabTitles: new Map(),
+  sessionIds: new Map(),
 
   setMapping: (sessionId, tabId, sessionTitle) =>
     set((s) => {
@@ -39,7 +41,9 @@ export const useSessionTabStore = create<SessionTabState>((set, get) => ({
         if (tid === tabId) nextMap.delete(sid);
       }
       nextMap.set(sessionId, tabId);
-      return { map: nextMap };
+      const nextIds = new Map(s.sessionIds);
+      nextIds.set(tabId, sessionId);
+      return { map: nextMap, sessionIds: nextIds };
     }),
 
   // Title-only update for tabs that have no Claude session id yet (new sessions,
@@ -60,7 +64,9 @@ export const useSessionTabStore = create<SessionTabState>((set, get) => ({
       }
       const nextTitles = new Map(s.tabTitles);
       nextTitles.delete(tabId);
-      return { map: nextMap, tabTitles: nextTitles };
+      const nextIds = new Map(s.sessionIds);
+      nextIds.delete(tabId);
+      return { map: nextMap, tabTitles: nextTitles, sessionIds: nextIds };
     }),
 
   // Removes all entries whose tabId is NOT in activeTabIds in a single set()
@@ -70,14 +76,18 @@ export const useSessionTabStore = create<SessionTabState>((set, get) => ({
       let changed = false;
       const nextMap = new Map(s.map);
       const nextTitles = new Map(s.tabTitles);
+      const nextIds = new Map(s.sessionIds);
       for (const [sid, tid] of nextMap) {
         if (!activeTabIds.has(tid)) {
           nextMap.delete(sid);
           nextTitles.delete(tid);
+          nextIds.delete(tid);
           changed = true;
         }
       }
-      return changed ? { map: nextMap, tabTitles: nextTitles } : s;
+      return changed
+        ? { map: nextMap, tabTitles: nextTitles, sessionIds: nextIds }
+        : s;
     }),
 
   getTabId: (sessionId) => get().map.get(sessionId),

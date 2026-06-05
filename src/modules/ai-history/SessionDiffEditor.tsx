@@ -7,7 +7,8 @@ import {
   resolveLanguage,
   resolveLanguageSync,
 } from "@/modules/editor/lib/languageResolver";
-import { EDITOR_THEME_EXT } from "@/modules/editor/lib/themes";
+import { getEditorThemeExtension } from "@/modules/editor/lib/themes";
+import { useCustomEditorThemesStore } from "@/modules/editor/useCustomEditorThemesStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { unifiedMergeView } from "@codemirror/merge";
 import { EditorState, type Extension } from "@codemirror/state";
@@ -80,7 +81,8 @@ export function SessionDiffEditor({
 }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const editorThemeId = usePreferencesStore((s) => s.editorTheme);
-  const themeExt = EDITOR_THEME_EXT[editorThemeId] ?? EDITOR_THEME_EXT.atomone;
+  const customEditorThemes = useCustomEditorThemesStore((s) => s.customEditorThemes);
+  const themeExt = getEditorThemeExtension(editorThemeId, customEditorThemes, path);
 
   const initialLang = useMemo(() => resolveLanguageSync(path), [path]);
 
