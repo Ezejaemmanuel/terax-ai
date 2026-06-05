@@ -271,17 +271,6 @@ pub fn agent_claude_hooks_status() -> bool {
     })
 }
 
-/// Bridge so the frontend can write diagnostics into the same on-disk log file
-/// (`terax.log`) as the Rust side — used by the launch watchdog when a hook
-/// marker never arrives. Keeps all agent-tracking breadcrumbs in one place.
-#[tauri::command]
-pub fn agent_log(level: String, message: String) {
-    match level.as_str() {
-        "error" => log::error!("[agent/ui] {message}"),
-        "warn" => log::warn!("[agent/ui] {message}"),
-        _ => log::info!("[agent/ui] {message}"),
-    }
-}
 
 #[cfg(test)]
 mod tests {

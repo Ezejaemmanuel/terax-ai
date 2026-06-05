@@ -7,6 +7,8 @@ import "../styles/globals.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ReactDOM from "react-dom/client";
 import { ThemeProvider } from "@/modules/theme";
+import { UpdaterProvider } from "@/modules/updater/UpdaterContext";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { SettingsApp } from "./SettingsApp";
 
@@ -14,11 +16,18 @@ if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
 }
 
+// The About section consumes UpdaterContext, so the settings window must supply
+// it (without it, opening About threw and blanked the whole window). autoCheck
+// is off here so the settings window doesn't redundantly check alongside main.
 ReactDOM.createRoot(
   document.getElementById("settings-root") as HTMLElement,
 ).render(
   <ThemeProvider>
-    <SettingsApp />
+    <ErrorBoundary label="settings window">
+      <UpdaterProvider autoCheck={false}>
+        <SettingsApp />
+      </UpdaterProvider>
+    </ErrorBoundary>
   </ThemeProvider>,
 );
 

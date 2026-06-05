@@ -6,11 +6,6 @@ import {
   normalizePath,
   type GitDecoration,
 } from "./gitDecoration";
-import { listenFsChanged } from "./watch";
-
-// Git spawns a process per status read, so coalesce bursts of file-watcher
-// events (e.g. a save that touches several files) into one refresh.
-const REFRESH_DEBOUNCE_MS = 400;
 
 export type GitDecorations = {
   decorationFor: (path: string) => GitDecoration | undefined;
@@ -22,8 +17,9 @@ export type GitDecorations = {
  * single app-wide {@link SourceControlSummary} that also feeds the Source
  * Control panel and the status-bar badge. Sharing that one instance means the
  * tree, panel, and badge always render the same snapshot — staging/committing
- * in the panel updates the tree, and the tree's file-watcher refresh updates
- * the panel — without spawning a second `git status` pipeline.
+ * in the panel updates the tree without spawning a second `git status`
+ * pipeline. The file-watcher refresh that keeps this snapshot live is wired in
+ * {@link App} so it runs regardless of which sidebar view is mounted.
  */
 export function useGitDecorations(
   sourceControl: SourceControlSummary,
@@ -54,43 +50,13 @@ export function useGitDecorations(
     return next;
   }, [status]);
 
-  // Keep a stable ref to refresh so the watcher effect subscribes once and
-  // never re-binds when refresh's identity changes (it depends on contextPath).
+  // Keep a stable ref to refresh so refreshGit's identity never changes as
+  // refresh re-binds (it depends on contextPath). The file-watcher refresh
+  // itself lives in App so it runs even when the explorer is unmounted.
   const refreshRef = useRef(refresh);
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
-
-  // Only refresh on file changes when we're actually inside a repo, so churn in
-  // a non-git workspace doesn't spawn git.
-  const hasRepoRef = useRef(sourceControl.hasRepo);
-  useEffect(() => {
-    hasRepoRef.current = sourceControl.hasRepo;
-  }, [sourceControl.hasRepo]);
-
-  useEffect(() => {
-    let alive = true;
-    let unlisten: (() => void) | undefined;
-    let timer: number | undefined;
-
-    void listenFsChanged(() => {
-      if (!hasRepoRef.current) return;
-      if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        timer = undefined;
-        void refreshRef.current({ remote: "never" });
-      }, REFRESH_DEBOUNCE_MS);
-    }).then((un) => {
-      if (alive) unlisten = un;
-      else un();
-    });
-
-    return () => {
-      alive = false;
-      if (timer) window.clearTimeout(timer);
-      unlisten?.();
-    };
-  }, []);
 
   const decorationFor = useCallback(
     (path: string): GitDecoration | undefined =>

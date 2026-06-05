@@ -16,6 +16,9 @@ type AgentStoreState = {
   notifications: AgentNotification[];
   start: (leafId: number, tabId: number, agent: string) => void;
   setStatus: (leafId: number, status: AgentStatus) => void;
+  /** Mark the current status as seen, so the row stops showing a dot until the
+   * next status event. No-op if there's no session or it's already acknowledged. */
+  acknowledge: (leafId: number) => void;
   finish: (leafId: number) => void;
   setLocalAgent: (state: LocalAgentState) => void;
   pushNotification: (
@@ -45,6 +48,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             startedAt: now,
             lastActivityAt: now,
             attentionSince: null,
+            acknowledged: false,
           },
         },
       };
@@ -53,7 +57,10 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   setStatus: (leafId, status) =>
     set((s) => {
       const prev = s.sessions[leafId];
-      if (!prev || prev.status === status) return s;
+      // Each status signal is a discrete hook event (working/attention/finished),
+      // so even a same-status repeat (e.g. a second permission request) must
+      // re-show the dot and bump recency — don't short-circuit on equal status.
+      if (!prev) return s;
       const now = Date.now();
       return {
         sessions: {
@@ -63,8 +70,19 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             status,
             lastActivityAt: now,
             attentionSince: status === "waiting" ? now : null,
+            // A new event always re-shows the dot until seen again.
+            acknowledged: false,
           },
         },
+      };
+    }),
+
+  acknowledge: (leafId) =>
+    set((s) => {
+      const prev = s.sessions[leafId];
+      if (!prev || prev.acknowledged) return s;
+      return {
+        sessions: { ...s.sessions, [leafId]: { ...prev, acknowledged: true } },
       };
     }),
 

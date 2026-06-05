@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { uiLog } from "@/lib/uiLog";
 
 import { useAgentStore } from "../store/agentStore";
 
@@ -21,13 +21,12 @@ export function watchForHookMarker(leafId: number): void {
   setTimeout(() => {
     // A session is registered as soon as any started/working marker arrives.
     if (useAgentStore.getState().sessions[leafId]) return;
-    void invoke("agent_log", {
-      level: "info",
-      message:
-        `no agent hook marker ${HOOK_MARKER_TIMEOUT_MS}ms after launching claude in leaf ${leafId}. ` +
+    uiLog(
+      "info",
+      `no agent hook marker ${HOOK_MARKER_TIMEOUT_MS}ms after launching claude in leaf ${leafId}. ` +
         `This is normal if no prompt was submitted yet; it only indicates a problem if status ` +
         `never updates after you prompt. If broken, check ~/.cache/terax/agent-hook/terax-hooks.log ` +
         `(did the hook run?) and ensure node is on PATH`,
-    }).catch(() => {});
+    );
   }, HOOK_MARKER_TIMEOUT_MS);
 }

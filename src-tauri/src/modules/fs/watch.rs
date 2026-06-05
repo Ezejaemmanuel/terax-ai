@@ -89,6 +89,14 @@ fn is_skipped(path: &Path) -> bool {
         .is_some_and(|n| SKIP_DIRS.contains(&n))
 }
 
+// The explorer never asks to watch `.git`, but the Source Control layer does so
+// terminal-driven git operations (stage, commit, checkout) — which only touch
+// files under `.git` — still trigger a status refresh. Permit it explicitly even
+// though `.git` is in SKIP_DIRS for the explorer's general traversal.
+fn is_git_dir(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()) == Some(".git")
+}
+
 #[derive(Default)]
 pub struct FsWatchState {
     inner: Mutex<Option<WatchInner>>,
@@ -183,7 +191,16 @@ fn add_paths(inner: &mut WatchInner, paths: Vec<PathBuf>) {
     for canonical in paths {
         let current = inner.refcounts.get(&canonical).copied().unwrap_or(0);
         if current == 0 {
-            match inner.watcher.watch(&canonical, RecursiveMode::NonRecursive) {
+            // Watch `.git` recursively: branch switches and many git operations
+            // only touch nested paths (`.git/refs/*`, `.git/logs/*`), which a
+            // non-recursive watch on `.git` would miss. Everything else (the
+            // explorer's per-directory watches) stays non-recursive.
+            let mode = if is_git_dir(&canonical) {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            match inner.watcher.watch(&canonical, mode) {
                 Ok(()) => {
                     inner.refcounts.insert(canonical, 1);
                 }
@@ -218,7 +235,10 @@ fn prepare_add(
         .filter_map(|raw| {
             let resolved = resolve_path(&raw, workspace);
             let canonical = std::fs::canonicalize(&resolved).ok()?;
-            if !canonical.is_dir() || is_skipped(&canonical) || !registry.is_authorized(&canonical) {
+            if !canonical.is_dir() || !registry.is_authorized(&canonical) {
+                return None;
+            }
+            if is_skipped(&canonical) && !is_git_dir(&canonical) {
                 return None;
             }
             Some(canonical)
@@ -281,6 +301,15 @@ mod tests {
         assert!(is_skipped(Path::new("/p/obj")));
         assert!(!is_skipped(Path::new("/a/src")));
         assert!(!is_skipped(Path::new("/a/node_modules/pkg")));
+    }
+
+    #[test]
+    fn git_dir_is_skipped_but_explicitly_permitted() {
+        // `.git` is in SKIP_DIRS for general traversal, yet recognized so the
+        // Source Control layer can still watch it for terminal-driven changes.
+        assert!(is_skipped(Path::new("/repo/.git")));
+        assert!(is_git_dir(Path::new("/repo/.git")));
+        assert!(!is_git_dir(Path::new("/repo/src")));
     }
 
     #[test]

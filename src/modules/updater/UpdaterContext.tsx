@@ -12,8 +12,16 @@ interface UpdaterCtx {
 
 const Ctx = createContext<UpdaterCtx | null>(null);
 
-export function UpdaterProvider({ children }: { children: ReactNode }) {
-  const { status, check, install, dismiss } = useUpdater({ autoCheck: true });
+export function UpdaterProvider({
+  children,
+  autoCheck = true,
+}: {
+  children: ReactNode;
+  /** Auto-check for updates on mount. Disable in secondary windows (e.g.
+   * settings) so they don't redundantly check alongside the main window. */
+  autoCheck?: boolean;
+}) {
+  const { status, check, install, dismiss } = useUpdater({ autoCheck });
   const [hasUpdate, setHasUpdate] = useState(false);
 
   useEffect(() => {

@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
-import type { AgentSession } from "@/modules/agents/lib/types";
+import type { AgentSession, AgentStatus } from "@/modules/agents/lib/types";
 import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import { copyToClipboard } from "@/modules/explorer/lib/contextActions";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -18,7 +18,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -89,6 +89,45 @@ function groupByFolder(terminalTabs: TerminalTab[]): FolderGroup[] {
 // last row of a scope). Kept as ids (not indices) so it survives re-renders.
 type DropIndicator = { beforeId: number } | { afterId: number } | null;
 
+// Single source of truth for the per-status dot + accent so the two never drift
+// apart: running=yellow, awaiting input=purple, completed=green.
+const STATUS_META: Record<
+  AgentStatus,
+  { dot: string; border: string; title: string; pulse: boolean }
+> = {
+  working: { dot: "bg-yellow-400", border: "border-yellow-400/70", title: "Running", pulse: true },
+  waiting: { dot: "bg-purple-500", border: "border-purple-500/70", title: "Awaiting your response", pulse: true },
+  completed: { dot: "bg-emerald-500", border: "border-emerald-500/70", title: "Completed", pulse: false },
+};
+
+// Display-only ordering: a currently-running Claude session bubbles to the top
+// of its scope, most-recently-active first, so the chat you just messaged sits
+// up top. Pinned terminals stay above everything; idle/completed ones hold
+// their place. Never mutates the persisted drag-order — only sorts what renders.
+function orderByActivity(
+  list: TerminalTab[],
+  sessions: Record<number, AgentSession>,
+): TerminalTab[] {
+  const rank = (t: TerminalTab) => {
+    if (t.pinned) return 0;
+    return sessions[t.activeLeafId]?.status === "working" ? 1 : 2;
+  };
+  return list
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => {
+      const ra = rank(a.t);
+      const rb = rank(b.t);
+      if (ra !== rb) return ra - rb;
+      if (ra === 1) {
+        const la = sessions[a.t.activeLeafId]?.lastActivityAt ?? 0;
+        const lb = sessions[b.t.activeLeafId]?.lastActivityAt ?? 0;
+        if (la !== lb) return lb - la;
+      }
+      return a.i - b.i; // stable: preserve persisted order within a rank
+    })
+    .map((x) => x.t);
+}
+
 export const TerminalListPanel = memo(function TerminalListPanel({
   tabs,
   activeId,
@@ -103,11 +142,41 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
   );
   const tabTitles = useSessionTabStore((s) => s.tabTitles);
-  const sessionIds = useSessionTabStore((s) => s.sessionIds);
   const grouped = usePreferencesStore((s) => s.terminalsGroupByFolder);
 
-  const terminalTabs = tabs.filter((t): t is TerminalTab => t.kind === "terminal");
+  const terminalTabs = useMemo(
+    () => tabs.filter((t): t is TerminalTab => t.kind === "terminal"),
+    [tabs],
+  );
   const canClose = terminalTabs.length > 1;
+
+  // Recompute the activity order only when the tabs or their statuses change —
+  // not on every unrelated re-render (drag indicator, title polling).
+  const orderedFlat = useMemo(
+    () => orderByActivity(terminalTabs, agentSessions),
+    [terminalTabs, agentSessions],
+  );
+  const orderedGroups = useMemo(
+    () =>
+      groupByFolder(terminalTabs).map((group) => ({
+        group,
+        tabs: orderByActivity(group.tabs, agentSessions),
+      })),
+    [terminalTabs, agentSessions],
+  );
+
+  // Freeze the order while the pointer is over the list so a row can't shift out
+  // from under the cursor between hover and click (which would select/close the
+  // wrong terminal). It re-sorts as soon as the pointer leaves.
+  const [pointerInside, setPointerInside] = useState(false);
+  const frozenFlat = useRef(orderedFlat);
+  const frozenGroups = useRef(orderedGroups);
+  if (!pointerInside) {
+    frozenFlat.current = orderedFlat;
+    frozenGroups.current = orderedGroups;
+  }
+  const displayFlat = pointerInside ? frozenFlat.current : orderedFlat;
+  const displayGroups = pointerInside ? frozenGroups.current : orderedGroups;
 
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const [dropInd, setDropInd] = useState<DropIndicator>(null);
@@ -168,13 +237,16 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     const sessionTitle = liveTitle ?? persistedTitle;
     const label = sessionTitle ?? cwdBasename(tab.cwd);
     const sublabel = sessionTitle ? cwdBasename(tab.cwd) : null;
-    // Short id of the bound Claude session (first segment of the UUID) — shown
-    // so a manually-launched `claude` terminal is identifiable, without dumping
-    // the full ugly UUID into the title. Falls back to the persisted id so the
-    // badge is present immediately after a restart, before the hook re-links.
-    const boundSid = sessionIds.get(tab.id) ?? tab.claudeSessionId;
-    const shortSid = boundSid?.split("-")[0];
-    const status = agentSession?.status;
+    // Visible status acts as a read-receipt: once acknowledged (the terminal was
+    // opened/active), it reads as no status — the dot and accent disappear until
+    // the next status event un-acknowledges it.
+    const status =
+      agentSession && !agentSession.acknowledged ? agentSession.status : undefined;
+    // Left accent follows the dot via STATUS_META; none when there's no
+    // (unseen) status.
+    const agentBorder = status
+      ? `border-l-2 ${STATUS_META[status].border} pl-[10px]`
+      : "border-l-2 border-transparent";
     const lineBefore = dropInd && "beforeId" in dropInd && dropInd.beforeId === tab.id;
     const lineAfter =
       isLastInScope && dropInd && "afterId" in dropInd && dropInd.afterId === tab.id;
@@ -197,9 +269,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
             onDragEnd={clearDrag}
             className={cn(
               "group relative flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
-              agentSession
-                ? "border-l-2 border-emerald-500/70 pl-[10px]"
-                : "border-l-2 border-transparent",
+              agentBorder,
               isActive
                 ? "bg-accent/60 text-foreground"
                 : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
@@ -238,18 +308,8 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                 />
               )}
               <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium leading-tight">
-                    {label}
-                  </span>
-                  {shortSid && (
-                    <span
-                      title={`Claude session ${boundSid}`}
-                      className="shrink-0 rounded bg-muted/60 px-1 font-mono text-[9px] leading-tight text-muted-foreground/70"
-                    >
-                      {shortSid}
-                    </span>
-                  )}
+                <span className="block truncate text-[11.5px] font-medium leading-tight">
+                  {label}
                 </span>
                 {sublabel && (
                   <span className="block truncate text-[10px] text-muted-foreground/60">
@@ -257,22 +317,14 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                   </span>
                 )}
               </span>
-              {status === "working" && (
+              {status && (
                 <span
-                  title="Working"
-                  className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
-                />
-              )}
-              {status === "waiting" && (
-                <span
-                  title="Waiting for input"
-                  className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400"
-                />
-              )}
-              {status === "completed" && (
-                <span
-                  title="Idle"
-                  className="mt-1 size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
+                  title={STATUS_META[status].title}
+                  className={cn(
+                    "mt-1 size-1.5 shrink-0 rounded-full",
+                    STATUS_META[status].dot,
+                    STATUS_META[status].pulse && "animate-pulse",
+                  )}
                 />
               )}
             </button>
@@ -331,14 +383,18 @@ export const TerminalListPanel = memo(function TerminalListPanel({
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+        onMouseEnter={() => setPointerInside(true)}
+        onMouseLeave={() => setPointerInside(false)}
+      >
         {terminalTabs.length === 0 ? (
           <p className="px-3 py-4 text-center text-[11px] text-muted-foreground/60">
             No terminals open.
           </p>
         ) : grouped ? (
           <div className="pb-2">
-            {groupByFolder(terminalTabs).map((group) => (
+            {displayGroups.map(({ group, tabs: groupTabs }) => (
               <div key={group.key}>
                 <div
                   className="group/folder flex items-center gap-1.5 px-3 pb-1 pt-2.5"
@@ -382,16 +438,16 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                     </span>
                   ) : null}
                 </div>
-                {group.tabs.map((tab, i) =>
-                  renderTab(tab, i === group.tabs.length - 1, group.key),
+                {groupTabs.map((tab, i, arr) =>
+                  renderTab(tab, i === arr.length - 1, group.key),
                 )}
               </div>
             ))}
           </div>
         ) : (
           <div className="pb-2">
-            {terminalTabs.map((tab, i) =>
-              renderTab(tab, i === terminalTabs.length - 1, "flat"),
+            {displayFlat.map((tab, i, arr) =>
+              renderTab(tab, i === arr.length - 1, "flat"),
             )}
           </div>
         )}

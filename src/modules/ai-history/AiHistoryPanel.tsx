@@ -40,6 +40,9 @@ type Props = {
   newTab: (cwd?: string) => number;
   setActiveId: (id: number) => void;
   tabs: Tab[];
+  /** Mark a just-launched Claude terminal as a persistent session (claude only):
+   * registers the leaf, flags the tab, persists the id, resolves the title. */
+  onClaudeLaunch?: (tabId: number, leafId: number, sessionId?: string) => void;
   onViewChanges?: (session: AiSession) => void;
 };
 
@@ -73,6 +76,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
   newTab,
   setActiveId,
   tabs,
+  onClaudeLaunch,
   onViewChanges,
 }: Props) {
   const {
@@ -173,7 +177,13 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         const leafId = tabId + 1;
         const command = tool === "claude" ? "claude --permission-mode auto" : "codex";
         const sent = await writeWhenReady(leafId, command);
-        if (sent && tool === "claude") watchForHookMarker(leafId);
+        if (sent && tool === "claude") {
+          // Flag as a persistent Claude session only once the command actually
+          // landed — a timeout must not leave the tab marked as a live session
+          // with no Claude process. The hook fills in the exact session id.
+          onClaudeLaunch?.(tabId, leafId);
+          watchForHookMarker(leafId);
+        }
         addFolder(cwd, projects.find((p) => p.fullPath === cwd)?.name ?? cwd.split(/[\\/]/).pop() ?? cwd);
       } finally {
         setOpeningNewCwd(null);
@@ -231,11 +241,16 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
             ? `claude --resume ${session.id}`
             : `codex --resume ${session.id}`;
         const sent = await writeWhenReady(leafId, command);
-        // Only record the mapping if the command was actually delivered.
-        // A timeout leaves the tab open (user can retry manually) but we don't
-        // lock the session to a tab that has no Claude process.
+        // Only record the mapping / flag the session if the command was actually
+        // delivered. A timeout leaves the tab open (user can retry manually) but
+        // we don't lock the session to a tab that has no Claude process.
         if (sent) {
-          if (tool === "claude") watchForHookMarker(leafId);
+          if (tool === "claude") {
+            // Flag as a persistent Claude session with the exact id, so it
+            // resumes precisely on restart even if closed before the hook fires.
+            onClaudeLaunch?.(tabId, leafId, session.id);
+            watchForHookMarker(leafId);
+          }
           setMapping(session.id, tabId, session.title);
           addFolder(session.cwd, projects.find((p) => p.fullPath === session.cwd)?.name ?? session.cwd.split(/[\\/]/).pop() ?? session.cwd);
         }

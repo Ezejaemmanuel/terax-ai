@@ -15,6 +15,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { JSX, useEffect, useState } from "react";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AboutSection } from "./sections/AboutSection";
 import { AgentsSection } from "./sections/AgentsSection";
 import { GeneralSection } from "./sections/GeneralSection";
@@ -112,7 +113,11 @@ export function SettingsApp() {
 
       <main className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-7 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="mx-auto w-full max-w-160">
-          {ActiveSection && <ActiveSection />}
+          {/* Keyed by `active` so switching tabs clears a prior tab's error
+              instead of leaving the whole window blank. */}
+          <ErrorBoundary key={active} label={`${active} settings`}>
+            {ActiveSection && <ActiveSection />}
+          </ErrorBoundary>
         </div>
       </main>
     </div>

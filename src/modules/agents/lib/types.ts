@@ -25,6 +25,9 @@ export type AgentSession = {
   startedAt: number;
   lastActivityAt: number;
   attentionSince: number | null;
+  /** True once the user has seen the current status (terminal opened/active).
+   * Acknowledged sessions render no dot; the next status event un-acknowledges. */
+  acknowledged: boolean;
 };
 
 export type AgentNotification = {

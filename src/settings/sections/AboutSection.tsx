@@ -6,6 +6,7 @@ import { getName, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { arch, platform } from "@tauri-apps/plugin-os";
 import { useEffect, useState } from "react";
+import { uiLog } from "@/lib/uiLog";
 import { SectionHeader } from "../components/SectionHeader";
 
 const REPO_URL = "https://github.com/crynta/terax-ai";
@@ -52,6 +53,7 @@ export function AboutSection() {
   };
 
   useEffect(() => {
+    uiLog("info", "settings: About section opened");
     void getVersion().then(setVersion);
     void getName().then(setName);
     try {

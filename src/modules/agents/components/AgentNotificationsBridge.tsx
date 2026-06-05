@@ -1,7 +1,7 @@
 import type { Tab } from "@/modules/tabs";
 import { hasLeaf, leafIdForPty } from "@/modules/terminal";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { uiLog } from "@/lib/uiLog";
 import { useEffect, useRef } from "react";
 import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import { maybeTriggerManagedReview } from "../lib/review";
@@ -12,7 +12,7 @@ import { useAgentStore } from "../store/agentStore";
 import { useManagedAgentsStore } from "../store/managedAgentsStore";
 
 type Activate = (tabId: number, leafId: number) => void;
-type BindSession = (tabId: number, sessionId: string) => void;
+type BindSession = (tabId: number, leafId: number, sessionId: string) => void;
 type Ctx = {
   tabs: Tab[];
   activeId: number;
@@ -64,7 +64,7 @@ function route(
 // (started / session / exited) are logged — working/attention/finished fire
 // every turn and would spam the log.
 function agentLog(message: string): void {
-  void invoke("agent_log", { level: "info", message }).catch(() => {});
+  uiLog("info", message);
 }
 
 function handleSignal(sig: AgentSignal, ctx: Ctx): void {
@@ -75,6 +75,13 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
     return;
   }
   const store = useAgentStore.getState();
+
+  // If the event lands on the terminal the user is already looking at, mark it
+  // seen immediately so its dot never appears — no need to switch away and back.
+  const ackIfActive = () => {
+    const owner = tabInfo(ctx.tabs, leafId);
+    if (owner && owner.tabId === ctx.activeId) store.acknowledge(leafId);
+  };
 
   switch (sig.kind) {
     case "started": {
@@ -88,6 +95,7 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
         `agent started: ${sig.agent ?? "agent"} (leaf ${leafId}, tab ${info.tabId}, pty ${sig.id})`,
       );
       store.start(leafId, info.tabId, sig.agent ?? "agent");
+      ackIfActive();
       return;
     }
     case "working":
@@ -95,11 +103,13 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
         console.debug("[agent] working: no session for leaf", leafId, "(missed start)");
       }
       store.setStatus(leafId, "working");
+      ackIfActive();
       return;
     case "attention": {
       store.setStatus(leafId, "waiting");
       const session = store.sessions[leafId];
       if (session) route(session, "attention", ctx);
+      ackIfActive();
       return;
     }
     case "finished": {
@@ -109,6 +119,7 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
       const session = store.sessions[leafId];
       if (session) route(session, "finished", ctx);
       maybeTriggerManagedReview(leafId);
+      ackIfActive();
       return;
     }
     case "exited":
@@ -128,9 +139,11 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
         `linked Claude session ${sig.session} -> tab ${info.tabId} (leaf ${leafId})`,
       );
       useSessionTabStore.getState().linkSession(sig.session, info.tabId);
-      // Persist the exact id on the tab, auto-flag it as a Claude session (so
-      // manual launches survive restart), and resolve its title for the label.
-      ctx.onBindSession(info.tabId, sig.session);
+      // Register the leaf + persist the exact id on the tab, auto-flag it as a
+      // Claude session (so manual launches survive restart), and resolve its
+      // title. Passing leafId lets App skip the restore-resume for this live
+      // leaf, preventing a duplicate `claude --resume` write.
+      ctx.onBindSession(info.tabId, leafId, sig.session);
       return;
     }
   }

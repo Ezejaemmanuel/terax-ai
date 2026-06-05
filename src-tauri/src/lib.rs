@@ -184,7 +184,6 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_claude_hooks,
             agent::agent_claude_hooks_status,
-            agent::agent_log,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,
@@ -204,6 +203,7 @@ pub fn run() {
             ai_history::session_changes,
             open_devtools,
             exit_app,
+            ui_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -221,4 +221,17 @@ fn open_devtools(window: tauri::WebviewWindow) {
 fn exit_app(app: tauri::AppHandle) {
     log::info!("exit_app: terminating process");
     app.exit(0);
+}
+
+/// Generic bridge so any webview (main or settings) can write diagnostics into
+/// the on-disk log (terax.log). Used by the frontend error boundary and other
+/// UI breadcrumbs so failures are debuggable from logs alone, even in the
+/// settings window which has no devtools shortcut.
+#[tauri::command]
+fn ui_log(level: String, message: String) {
+    match level.as_str() {
+        "error" => log::error!("[ui] {message}"),
+        "warn" => log::warn!("[ui] {message}"),
+        _ => log::info!("[ui] {message}"),
+    }
 }

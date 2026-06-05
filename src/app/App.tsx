@@ -20,6 +20,8 @@ import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
 import { firePendingReviewForSession } from "@/modules/agents/lib/review";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
 import { watchForHookMarker } from "@/modules/agents/lib/hookWatchdog";
+import { useAgentStore } from "@/modules/agents/store/agentStore";
+import { uiLog } from "@/lib/uiLog";
 import { Toaster } from "@/components/ui/sonner";
 import {
   AgentRunBridge,
@@ -183,6 +185,11 @@ function readSidebarView(): SidebarViewId {
   return "explorer";
 }
 
+// Git spawns a process per status read, so coalesce bursts of file-watcher
+// events (e.g. a save touching several files, or a commit touching many under
+// .git) into one refresh.
+const GIT_REFRESH_DEBOUNCE_MS = 400;
+
 export default function App() {
   const {
     tabs,
@@ -235,6 +242,14 @@ export default function App() {
     return t && t.kind === "terminal" ? t : null;
   }, [tabs, activeId]);
   const activeLeafId = activeTerminalTab?.activeLeafId ?? null;
+
+  // Opening/switching to a terminal marks its agent status as seen, so the dot
+  // clears. The dot returns on the next status event (and an event on the
+  // already-active terminal auto-acknowledges in AgentNotificationsBridge, so a
+  // visible terminal never carries a dot).
+  useEffect(() => {
+    if (activeLeafId !== null) useAgentStore.getState().acknowledge(activeLeafId);
+  }, [activeId, activeLeafId]);
 
   const searchAddons = useRef<Map<number, SearchAddon>>(new Map());
   const [activeSearchAddon, setActiveSearchAddon] =
@@ -496,25 +511,25 @@ export default function App() {
     async (
       cwd: string | undefined,
       leafId: number,
-      knownSessionId?: string,
+      opts?: { knownSessionId?: string; fresh?: boolean },
     ) => {
       const hooksReady = invoke("agent_enable_claude_hooks").catch((e) => {
         // Surface install failure into terax.log — the tracker can't work
         // without the hooks, so a release build needs this on disk.
-        void invoke("agent_log", {
-          level: "error",
-          message: `hook install failed before claude launch: ${String(e)}`,
-        }).catch(() => {});
+        uiLog("error", `hook install failed before claude launch: ${String(e)}`);
       });
-      // Prefer the exact session bound to this terminal (restored from disk).
-      // Only fall back to the folder's latest session when we don't have one.
-      const sessionId =
-        knownSessionId ??
-        (cwd
-          ? await invoke<string | null>("claude_latest_session", { cwd }).catch(
-              () => null,
-            )
-          : null);
+      // A fresh launch (the folder "Launch Claude" icon) always starts a NEW
+      // session — `claude --permission-mode auto`, matching the AI-History "new
+      // session" path. Only restore resumes: the exact bound id when we have it
+      // (from disk), otherwise the folder's latest session.
+      const sessionId = opts?.fresh
+        ? null
+        : (opts?.knownSessionId ??
+          (cwd
+            ? await invoke<string | null>("claude_latest_session", { cwd }).catch(
+                () => null,
+              )
+            : null));
       await hooksReady;
       // Fresh launches start in auto permission mode (matching the AI-History
       // "new session" path). On --resume Claude restores the session's own
@@ -522,12 +537,12 @@ export default function App() {
       const cmd = sessionId
         ? `claude --resume ${sessionId}`
         : "claude --permission-mode auto";
-      void invoke("agent_log", {
-        level: "info",
-        message: `launching claude in leaf ${leafId} (${
+      uiLog(
+        "info",
+        `launching claude in leaf ${leafId} (${
           sessionId ? `resume ${sessionId}` : "fresh session"
         }) cwd=${cwd ?? "?"}`,
-      }).catch(() => {});
+      );
       await writeCommandToSessionWhenReady(leafId, cmd);
       watchForHookMarker(leafId);
     },
@@ -551,7 +566,9 @@ export default function App() {
       if (t.claudeSessionId) {
         useSessionTabStore.getState().linkSession(t.claudeSessionId, t.id);
       }
-      void startClaudeInLeaf(t.cwd, leafId, t.claudeSessionId);
+      void startClaudeInLeaf(t.cwd, leafId, {
+        knownSessionId: t.claudeSessionId,
+      });
     }
   }, [tabs, startClaudeInLeaf]);
 
@@ -1067,6 +1084,57 @@ export default function App() {
     : badgeContextPath;
   const sourceControl = useSourceControl(sourceControlPath, true);
 
+  // Keep git status live regardless of which sidebar view is mounted. The
+  // explorer's decoration hook only listens for file-watcher events while the
+  // explorer itself is rendered; lifting the refresh here means the Source
+  // Control panel and the status-bar badge stay current as files change on
+  // disk even when the explorer is hidden. Git spawns a process per status
+  // read, so coalesce bursts (e.g. a save touching several files) into one.
+  const sourceControlRefreshRef = useRef(sourceControl.refresh);
+  const sourceControlHasRepoRef = useRef(sourceControl.hasRepo);
+  useEffect(() => {
+    sourceControlRefreshRef.current = sourceControl.refresh;
+    sourceControlHasRepoRef.current = sourceControl.hasRepo;
+  }, [sourceControl.refresh, sourceControl.hasRepo]);
+
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    let timer: number | undefined;
+    void listenFsChanged(() => {
+      if (!sourceControlHasRepoRef.current) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        void sourceControlRefreshRef.current({ remote: "never" });
+      }, GIT_REFRESH_DEBOUNCE_MS);
+    }).then((un) => {
+      if (alive) unlisten = un;
+      else un();
+    });
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+      unlisten?.();
+    };
+  }, []);
+
+  // Watch the repo's `.git` directory so git operations run from a terminal
+  // (stage, commit, checkout) — which only touch files under `.git` rather than
+  // the working tree — still trigger the status refresh above. The backend
+  // watches `.git` recursively, so nested changes (`refs/*`, `logs/*`) are
+  // caught too, not just top-level `index`/`HEAD`.
+  const gitDirWatchRef = useRef<string | null>(null);
+  useEffect(() => {
+    const repoRoot = sourceControl.repo?.repoRoot ?? null;
+    const want = repoRoot ? `${repoRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/.git` : null;
+    const prev = gitDirWatchRef.current;
+    if (want === prev) return;
+    if (prev) watchRemove([prev]);
+    if (want) watchAdd([want]);
+    gitDirWatchRef.current = want;
+  }, [sourceControl.repo?.repoRoot]);
+
   const toggleSourceControl = useCallback(() => {
     cycleSidebarView("source-control");
   }, [cycleSidebarView]);
@@ -1277,14 +1345,24 @@ export default function App() {
     focusInput(null);
   }, [openPanel, focusInput]);
 
-  // Bind a discovered Claude session id to its terminal tab. Persists the exact
-  // id (so restart resumes this precise conversation) and marks the tab as a
-  // Claude session so a *manually*-launched `claude` survives restart too — not
-  // just AI-icon launches. Also resolves the conversation title and applies it
-  // to the tab (persisted) + the live terminal-list label.
-  const bindClaudeSession = useCallback(
-    (tabId: number, sessionId: string) => {
-      updateTab(tabId, { claudeSessionId: sessionId, claudeSession: true });
+  // Mark a terminal as a live Claude session. Used by both the agent-hook
+  // binding (once the session id is known) and the AI-history launches (at
+  // launch time). It:
+  //  - registers the leaf as already-started, so the restore-resume effect
+  //    never writes `claude --resume` into a session that's already running
+  //    (the cause of the duplicate-resume-into-the-chat bug);
+  //  - flags the tab as a Claude session so it survives restart from ANY launch
+  //    path (sidebar icon, AI-history, manual `claude`);
+  //  - persists the exact session id when known (precise resume on restart);
+  //  - resolves the conversation title for the tab (persisted) + live label.
+  const bindClaudeTerminal = useCallback(
+    (tabId: number, leafId: number, sessionId?: string) => {
+      startedClaudeLeavesRef.current.add(leafId);
+      updateTab(tabId, {
+        claudeSession: true,
+        ...(sessionId ? { claudeSessionId: sessionId } : {}),
+      });
+      if (!sessionId) return;
       // The `session` signal fires once, but a brand-new conversation has no
       // ai-title for the first turn or two. Poll a few times so the label fills
       // in shortly after, then give up (a restart would re-bind and re-fetch).
@@ -1426,17 +1504,17 @@ export default function App() {
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
         const hooksReady = invoke("agent_enable_claude_hooks").catch((e) => {
-          void invoke("agent_log", {
-            level: "error",
-            message: `hook install failed before managed-agent launch: ${String(e)}`,
-          }).catch(() => {});
+          uiLog(
+            "error",
+            `hook install failed before managed-agent launch: ${String(e)}`,
+          );
         });
         void (async () => {
           await hooksReady;
-          void invoke("agent_log", {
-            level: "info",
-            message: `launching managed claude in leaf ${leafId} (session ${sessionId}) cwd=${cwd ?? "?"}`,
-          }).catch(() => {});
+          uiLog(
+            "info",
+            `launching managed claude in leaf ${leafId} (session ${sessionId}) cwd=${cwd ?? "?"}`,
+          );
           if (!(await writeCommandToSessionWhenReady(leafId, "claude"))) {
             useManagedAgentsStore.getState().remove(leafId);
             return;
@@ -1681,6 +1759,7 @@ export default function App() {
                         newTab={newTab}
                         setActiveId={setActiveId}
                         tabs={tabs}
+                        onClaudeLaunch={bindClaudeTerminal}
                         onViewChanges={(session) =>
                           openAiSessionDiffTab({
                             sessionId: session.id,
@@ -1774,7 +1853,8 @@ export default function App() {
                     // Mark as started so the restore effect doesn't double-fire
                     // into this leaf.
                     startedClaudeLeavesRef.current.add(leafId);
-                    void startClaudeInLeaf(cwd, leafId);
+                    // The folder icon launches a NEW session, never resumes.
+                    void startClaudeInLeaf(cwd, leafId, { fresh: true });
                   }}
                 />
               </ResizablePanel>
@@ -1798,7 +1878,7 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             onActivate={onActivateAgent}
-            onBindSession={bindClaudeSession}
+            onBindSession={bindClaudeTerminal}
           />
           <Toaster position="bottom-right" />
 
