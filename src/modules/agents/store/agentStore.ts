@@ -80,7 +80,10 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   acknowledge: (leafId) =>
     set((s) => {
       const prev = s.sessions[leafId];
-      if (!prev || prev.acknowledged) return s;
+      // "working" is a live progress indicator, not a read-receipt — keep the
+      // dot visible even on the terminal you're viewing. Only completed/awaiting
+      // (the "you have something to look at" states) clear on open.
+      if (!prev || prev.acknowledged || prev.status === "working") return s;
       return {
         sessions: { ...s.sessions, [leafId]: { ...prev, acknowledged: true } },
       };

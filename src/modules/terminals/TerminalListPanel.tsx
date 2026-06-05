@@ -128,6 +128,45 @@ function orderByActivity(
     .map((x) => x.t);
 }
 
+// A folder group's activity, so groups can bubble up like the terminals inside
+// them: a group with a running session sorts first, then by the most-recent
+// activity of any terminal in it.
+function groupActivityKey(
+  groupTabs: TerminalTab[],
+  sessions: Record<number, AgentSession>,
+): { running: boolean; recency: number } {
+  let running = false;
+  let recency = 0;
+  for (const t of groupTabs) {
+    const s = sessions[t.activeLeafId];
+    if (!s) continue;
+    if (s.status === "working") running = true;
+    if (s.lastActivityAt > recency) recency = s.lastActivityAt;
+  }
+  return { running, recency };
+}
+
+// Reorder `list` to the frozen positions captured by `keyOf` (so rows/groups
+// don't jump under the cursor), while keeping membership live: items missing a
+// frozen position (opened since the freeze) sort after the frozen ones.
+function applyFrozenOrder<T>(
+  list: T[],
+  frozen: Map<string | number, number>,
+  keyOf: (x: T) => string | number,
+): T[] {
+  return list
+    .map((x, i) => ({ x, i }))
+    .sort((a, b) => {
+      const pa = frozen.get(keyOf(a.x));
+      const pb = frozen.get(keyOf(b.x));
+      if (pa != null && pb != null) return pa - pb;
+      if (pa != null) return -1;
+      if (pb != null) return 1;
+      return a.i - b.i;
+    })
+    .map((e) => e.x);
+}
+
 export const TerminalListPanel = memo(function TerminalListPanel({
   tabs,
   activeId,
@@ -156,27 +195,50 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     () => orderByActivity(terminalTabs, agentSessions),
     [terminalTabs, agentSessions],
   );
-  const orderedGroups = useMemo(
-    () =>
-      groupByFolder(terminalTabs).map((group) => ({
-        group,
-        tabs: orderByActivity(group.tabs, agentSessions),
-      })),
-    [terminalTabs, agentSessions],
-  );
+  const orderedGroups = useMemo(() => {
+    const groups = groupByFolder(terminalTabs).map((group) => ({
+      group,
+      tabs: orderByActivity(group.tabs, agentSessions),
+    }));
+    // Bubble whole folder groups by activity too: a group with a running
+    // session first, then most-recently-active, else first-seen order.
+    return groups
+      .map((g, i) => ({ g, i }))
+      .sort((a, b) => {
+        const ka = groupActivityKey(a.g.group.tabs, agentSessions);
+        const kb = groupActivityKey(b.g.group.tabs, agentSessions);
+        if (ka.running !== kb.running) return ka.running ? -1 : 1;
+        if (ka.recency !== kb.recency) return kb.recency - ka.recency;
+        return a.i - b.i;
+      })
+      .map((x) => x.g);
+  }, [terminalTabs, agentSessions]);
 
-  // Freeze the order while the pointer is over the list so a row can't shift out
-  // from under the cursor between hover and click (which would select/close the
-  // wrong terminal). It re-sorts as soon as the pointer leaves.
+  // While the pointer is over the list, freeze only the ORDER (of both groups
+  // and the terminals inside them) so a row can't shift out from under the
+  // cursor between hover and click. Membership still updates live: a closed
+  // terminal drops out and a new one appears immediately (we always derive from
+  // the current ordered lists, never a stale snapshot — snapshotting whole rows
+  // made closed terminals linger in the sidebar).
   const [pointerInside, setPointerInside] = useState(false);
-  const frozenFlat = useRef(orderedFlat);
-  const frozenGroups = useRef(orderedGroups);
+  const frozenPos = useRef<Map<string | number, number>>(new Map());
+  const frozenGroupPos = useRef<Map<string | number, number>>(new Map());
   if (!pointerInside) {
-    frozenFlat.current = orderedFlat;
-    frozenGroups.current = orderedGroups;
+    const tabPos = new Map<string | number, number>();
+    orderedFlat.forEach((t, i) => tabPos.set(t.id, i));
+    frozenPos.current = tabPos;
+    const groupPos = new Map<string | number, number>();
+    orderedGroups.forEach((g, i) => groupPos.set(g.group.key, i));
+    frozenGroupPos.current = groupPos;
   }
-  const displayFlat = pointerInside ? frozenFlat.current : orderedFlat;
-  const displayGroups = pointerInside ? frozenGroups.current : orderedGroups;
+  const stabilizeTabs = (list: TerminalTab[]): TerminalTab[] =>
+    pointerInside ? applyFrozenOrder(list, frozenPos.current, (t) => t.id) : list;
+  const displayFlat = stabilizeTabs(orderedFlat);
+  const displayGroups = (
+    pointerInside
+      ? applyFrozenOrder(orderedGroups, frozenGroupPos.current, (g) => g.group.key)
+      : orderedGroups
+  ).map(({ group, tabs }) => ({ group, tabs: stabilizeTabs(tabs) }));
 
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const [dropInd, setDropInd] = useState<DropIndicator>(null);

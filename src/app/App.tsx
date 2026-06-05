@@ -549,28 +549,32 @@ export default function App() {
     [],
   );
 
-  // Resume restored Claude terminals. A terminal launched via the sidebar
-  // "Launch Claude" button is flagged `claudeSession` and persisted; when the
-  // session is restored (app relaunch) its shell comes back empty, so we resume
-  // the folder's conversation. Fresh launches are pre-marked in
-  // startedClaudeLeavesRef, so they're skipped here.
+  // Re-link every persisted Claude session id up front so the badge, title, and
+  // "jump to running terminal" matching work immediately on restore — this needs
+  // no PTY, just the mapping.
   useEffect(() => {
     for (const t of tabs) {
-      if (t.kind !== "terminal" || !t.claudeSession) continue;
-      const leafId = t.activeLeafId;
-      if (startedClaudeLeavesRef.current.has(leafId)) continue;
-      startedClaudeLeavesRef.current.add(leafId);
-      // Re-link the persisted session id immediately so the badge + "jump to
-      // running terminal" matching work before the resumed claude re-fires its
-      // hook. Resume the exact session when we have its id.
-      if (t.claudeSessionId) {
-        useSessionTabStore.getState().linkSession(t.claudeSessionId, t.id);
-      }
-      void startClaudeInLeaf(t.cwd, leafId, {
-        knownSessionId: t.claudeSessionId,
-      });
+      if (t.kind !== "terminal" || !t.claudeSession || !t.claudeSessionId) continue;
+      useSessionTabStore.getState().linkSession(t.claudeSessionId, t.id);
     }
-  }, [tabs, startClaudeInLeaf]);
+  }, [tabs]);
+
+  // Resume a restored Claude terminal the first time it becomes active. PTYs are
+  // opened lazily — only when a tab becomes visible (a backgrounded tab has no
+  // PTY to write `claude --resume` into yet, which is why resuming all of them
+  // up front silently failed for every chat except the active one). The
+  // initially-active tab resumes at startup; the rest resume the moment you open
+  // them. Fresh launches are pre-marked in startedClaudeLeavesRef, so skipped.
+  useEffect(() => {
+    const t = activeTerminalTab;
+    if (!t || !t.claudeSession) return;
+    const leafId = t.activeLeafId;
+    if (startedClaudeLeavesRef.current.has(leafId)) return;
+    startedClaudeLeavesRef.current.add(leafId);
+    void startClaudeInLeaf(t.cwd, leafId, {
+      knownSessionId: t.claudeSessionId,
+    });
+  }, [activeTerminalTab, startClaudeInLeaf]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
