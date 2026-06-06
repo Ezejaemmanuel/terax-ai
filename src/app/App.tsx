@@ -257,6 +257,9 @@ export default function App() {
   const searchInlineRef = useRef<SearchInlineHandle | null>(null);
   const terminalRefs = useRef<Map<number, TerminalPaneHandle>>(new Map());
   const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
+  // path -> 1-based line to reveal once the editor for that path is ready.
+  // Set when opening a file from a search hit; consumed on handle registration.
+  const pendingRevealRef = useRef<Map<string, number>>(new Map());
   const previewRefs = useRef<Map<number, PreviewPaneHandle>>(new Map());
   const [activeEditorHandle, setActiveEditorHandle] =
     useState<EditorPaneHandle | null>(null);
@@ -979,6 +982,24 @@ export default function App() {
     [openFileTab],
   );
 
+  // Open a file from a content-search hit and jump to the matching line.
+  const handleOpenFileAtLine = useCallback(
+    (path: string, line: number) => {
+      pendingRevealRef.current.set(path, line);
+      openFileTab(path, false);
+      // If the file is already open, its handle won't re-register, so drive the
+      // jump directly. Otherwise registerEditorHandle consumes the pending line.
+      for (const h of editorRefs.current.values()) {
+        if (h.getPath() === path) {
+          pendingRevealRef.current.delete(path);
+          h.gotoLine(line);
+          break;
+        }
+      }
+    },
+    [openFileTab],
+  );
+
   const handlePathRenamed = useCallback(
     (from: string, to: string) => {
       for (const t of tabs) {
@@ -1300,6 +1321,15 @@ export default function App() {
       if (h) editorRefs.current.set(id, h);
       else editorRefs.current.delete(id);
       if (id === activeId) setActiveEditorHandle(h);
+      // A search hit opened this file — jump to the requested line now that the
+      // editor pane has mounted. The pane buffers internally until its doc loads.
+      if (h) {
+        const line = pendingRevealRef.current.get(h.getPath());
+        if (line !== undefined) {
+          pendingRevealRef.current.delete(h.getPath());
+          h.gotoLine(line);
+        }
+      }
     },
     [activeId],
   );
@@ -1743,6 +1773,7 @@ export default function App() {
                         rootPath={explorerRoot}
                         sourceControl={sourceControl}
                         onOpenFile={handleOpenFile}
+                        onOpenFileAtLine={handleOpenFileAtLine}
                         onPathRenamed={handlePathRenamed}
                         onPathDeleted={handlePathDeleted}
                         onRevealInTerminal={cdInNewTab}

@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
@@ -21,6 +22,30 @@ pub struct GrepHit {
     pub rel: String,
     pub line: u64,
     pub text: String,
+    /// `[start, end)` offsets of each match within `text`, in UTF-16 code units
+    /// so the frontend (JS strings are UTF-16) can slice/highlight directly.
+    pub submatches: Vec<[u32; 2]>,
+}
+
+/// Maps a UTF-8 byte offset within `s` to its UTF-16 code-unit offset, so match
+/// ranges line up with JavaScript string indexing on the frontend.
+fn utf16_offset(s: &str, byte_off: usize) -> u32 {
+    let clamped = byte_off.min(s.len());
+    s[..clamped].encode_utf16().count() as u32
+}
+
+/// Finds every match of `matcher` within a single line and returns the
+/// `[start, end)` ranges in UTF-16 code units.
+fn line_submatches(matcher: &grep_regex::RegexMatcher, line: &str) -> Vec<[u32; 2]> {
+    let mut ranges = Vec::new();
+    let _ = matcher.find_iter(line.as_bytes(), |m| {
+        ranges.push([
+            utf16_offset(line, m.start()),
+            utf16_offset(line, m.end()),
+        ]);
+        true
+    });
+    ranges
 }
 
 #[derive(Serialize)]
@@ -49,6 +74,7 @@ pub fn fs_grep(
     root: String,
     glob: Option<Vec<String>>,
     case_insensitive: Option<bool>,
+    whole_word: Option<bool>,
     max_results: Option<usize>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<GrepResponse, String> {
@@ -66,6 +92,7 @@ pub fn fs_grep(
 
     let matcher = RegexMatcherBuilder::new()
         .case_insensitive(case_insensitive.unwrap_or(false))
+        .word(whole_word.unwrap_or(false))
         .line_terminator(Some(b'\n'))
         .build(&pattern)
         .map_err(|e| format!("bad regex: {e}"))?;
@@ -137,6 +164,7 @@ pub fn fs_grep(
                 path,
                 UTF8(|line_num, text| {
                     let line_text = text.trim_end_matches('\n').to_string();
+                    let submatches = line_submatches(&matcher, &line_text);
                     let mut guard = hits.lock().unwrap();
                     if guard.len() >= cap {
                         truncated.store(true, Ordering::Relaxed);
@@ -147,6 +175,7 @@ pub fn fs_grep(
                         rel: rel_clone.clone(),
                         line: line_num,
                         text: line_text,
+                        submatches,
                     });
                     Ok(true)
                 }),

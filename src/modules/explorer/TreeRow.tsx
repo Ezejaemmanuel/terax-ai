@@ -19,6 +19,7 @@ import { colorClassFor, type GitDecoration } from "./lib/gitDecoration";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import type { useFileTree } from "./lib/useFileTree";
+import type { SelectMods } from "./lib/useSelection";
 
 type Tree = ReturnType<typeof useFileTree>;
 
@@ -32,9 +33,26 @@ export type EntryRowProps = {
   tree: Tree;
   isSelected: boolean;
   isRenaming: boolean;
+  /** This row's path is on the clipboard in "cut" mode — render it dimmed. */
+  isCut: boolean;
+  /** The clipboard holds something, so Paste is available. */
+  canPaste: boolean;
+  /** A drag is in progress and this folder is the current drop target. */
+  isDropTarget: boolean;
   gitStatus?: GitDecoration;
   onOpenFile: (path: string, pin?: boolean) => void;
-  onSelectPath: (path: string) => void;
+  onSelectPath: (path: string, mods?: SelectMods) => void;
+  /** Copy/cut the current selection (this row is part of it after right-click). */
+  onCopy: () => void;
+  onCut: () => void;
+  /** Paste the clipboard into the given directory. */
+  onPaste: (targetDir: string) => void;
+  /** Resolve the set of paths a drag starting on this row should carry. */
+  onDragPaths: (path: string) => string[];
+  /** Begin a pointer-driven drag of `sources`. */
+  onDragStart: (e: React.PointerEvent, sources: string[]) => void;
+  /** True if a drag just ended, so the trailing click is ignored. */
+  didDrag: () => boolean;
   onRevealInTerminal?: (path: string) => void;
   onAttachToAgent?: (path: string) => void;
   onOpenMarkdownPreview?: (path: string) => void;
@@ -55,9 +73,18 @@ function EntryRowImpl(props: EntryRowProps) {
     tree,
     isSelected,
     isRenaming,
+    isCut,
+    canPaste,
+    isDropTarget,
     gitStatus,
     onOpenFile,
     onSelectPath,
+    onCopy,
+    onCut,
+    onPaste,
+    onDragPaths,
+    onDragStart,
+    didDrag,
     onRevealInTerminal,
     onAttachToAgent,
     onOpenMarkdownPreview,
@@ -68,11 +95,29 @@ function EntryRowImpl(props: EntryRowProps) {
   const createTarget = isDir ? path : path.slice(0, path.lastIndexOf("/")) || rootPath;
   const paddingLeft = 6 + depth * 12;
 
-  const handleClick = () => {
+  const handleClick = (e: React.MouseEvent) => {
     if (tree.renaming) return;
-    onSelectPath(path);
+    // The pointerup that ends a drag also fires a click — ignore it.
+    if (didDrag()) return;
+    const additive = e.ctrlKey || e.metaKey;
+    const range = e.shiftKey;
+    onSelectPath(path, { additive, range });
+    // A multi-select gesture only adjusts the selection — it must not open the
+    // file or expand the folder (matches VS Code).
+    if (additive || range) return;
     if (isDir) tree.toggle(path);
     else onOpenFile(path);
+  };
+
+  // Right-clicking a row that isn't part of the selection selects just it, so
+  // context-menu actions always operate on what the user clicked.
+  const handleContextMenu = () => {
+    if (!isSelected) onSelectPath(path);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (tree.renaming) return;
+    onDragStart(e, onDragPaths(path));
   };
 
   return (
@@ -99,11 +144,16 @@ function EntryRowImpl(props: EntryRowProps) {
           <button
             type="button"
             data-fs-path={path}
+            data-fs-dir={isDir ? "1" : "0"}
             onClick={handleClick}
+            onContextMenu={handleContextMenu}
             onDoubleClick={() => !isDir && tree.beginRename(path)}
+            onPointerDown={handlePointerDown}
             className={cn(
               "group flex h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 text-left text-[13px] text-foreground/85 transition-colors hover:bg-accent/70",
               isSelected && "bg-accent text-foreground",
+              isCut && "opacity-50",
+              isDropTarget && "ring-1 ring-inset ring-primary bg-accent/60",
             )}
             style={{ paddingLeft }}
           >
@@ -185,6 +235,21 @@ function EntryRowImpl(props: EntryRowProps) {
         >
           Reveal in Finder
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem className={COMPACT_ITEM} onSelect={onCut}>
+          Cut
+        </ContextMenuItem>
+        <ContextMenuItem className={COMPACT_ITEM} onSelect={onCopy}>
+          Copy
+        </ContextMenuItem>
+        {canPaste && (
+          <ContextMenuItem
+            className={COMPACT_ITEM}
+            onSelect={() => onPaste(createTarget)}
+          >
+            Paste
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem
           className={COMPACT_ITEM}

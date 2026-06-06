@@ -20,6 +20,8 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "opener:default",
+    "clipboard:allow-read-files",
+    "clipboard:allow-has-files",
     "log:default",
     "os:default",
     "notification:default",

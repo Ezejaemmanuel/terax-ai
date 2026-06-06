@@ -21,6 +21,7 @@ export type ShortcutId =
   | "terminal.clear"
   | "search.focus"
   | "explorer.search"
+  | "explorer.fileSearch"
   | "explorer.focus"
   | "view.zoomIn"
   | "view.zoomOut"
@@ -88,7 +89,8 @@ export const SHORTCUTS: Shortcut[] = [
     id: "tab.newPreview",
     label: "New preview tab",
     group: "Tabs",
-    defaultBindings: [{ [MOD_PROP]: true, key: "p" }],
+    // Moved off Cmd/Ctrl+P so that key can host the VSCode-style file finder.
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "p" }],
   },
   {
     id: "tab.newEditor",
@@ -161,9 +163,15 @@ export const SHORTCUTS: Shortcut[] = [
   },
   {
     id: "explorer.search",
-    label: "Search files",
+    label: "Search in files",
     group: "Search",
     defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "f" }],
+  },
+  {
+    id: "explorer.fileSearch",
+    label: "Find file by name",
+    group: "Search",
+    defaultBindings: [{ [MOD_PROP]: true, key: "p" }],
   },
   {
     id: "search.focus",

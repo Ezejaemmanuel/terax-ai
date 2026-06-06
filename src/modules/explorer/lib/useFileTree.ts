@@ -368,6 +368,36 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     [fetchChildren, options],
   );
 
+  // Copy ("copy") or move ("cut") a set of paths into `destDir`. Collisions are
+  // auto-renamed by the backend ("foo copy.txt"), so this never clobbers.
+  const pasteInto = useCallback(
+    async (destDir: string, sources: string[], mode: "copy" | "cut") => {
+      if (sources.length === 0) return;
+      const cmd = mode === "cut" ? "fs_move" : "fs_copy";
+      try {
+        await invoke(cmd, {
+          sources,
+          destDir,
+          onConflict: "rename",
+          workspace: currentWorkspaceEnv(),
+        });
+        // Reveal the result, then refresh the destination listing.
+        if (rootPath && destDir !== rootPath) expand(destDir);
+        await fetchChildren(destDir);
+        // A move also empties the source folders — refresh any that are loaded.
+        if (mode === "cut") {
+          const parents = new Set(sources.map(dirname));
+          for (const p of parents) {
+            if (p !== destDir && nodesRef.current[p]) await fetchChildren(p);
+          }
+        }
+      } catch (e) {
+        console.error(`${cmd} failed:`, e);
+      }
+    },
+    [rootPath, expand, fetchChildren],
+  );
+
   return {
     nodes,
     expanded,
@@ -383,6 +413,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     cancelRename,
     commitRename,
     deletePath,
+    pasteInto,
     joinPath,
   };
 }

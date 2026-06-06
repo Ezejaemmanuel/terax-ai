@@ -26,6 +26,8 @@ export type GrepHit = {
   rel: string;
   line: number;
   text: string;
+  /** `[start, end)` ranges of each match within `text`, in UTF-16 code units. */
+  submatches: [number, number][];
 };
 
 export type GrepResponse = {
@@ -163,6 +165,7 @@ export const native = {
     root: string;
     glob?: string[];
     caseInsensitive?: boolean;
+    wholeWord?: boolean;
     maxResults?: number;
   }) =>
     invoke<GrepResponse>("fs_grep", {
@@ -170,6 +173,7 @@ export const native = {
       root: params.root,
       glob: params.glob ?? null,
       caseInsensitive: params.caseInsensitive ?? null,
+      wholeWord: params.wholeWord ?? null,
       maxResults: params.maxResults ?? null,
       workspace: currentWorkspaceEnv(),
     }),

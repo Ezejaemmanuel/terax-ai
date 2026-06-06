@@ -5,7 +5,7 @@ import {
   SearchQuery,
   setSearchQuery,
 } from "@codemirror/search";
-import { keymap } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { getEditorThemeExtension } from "./lib/themes";
@@ -73,6 +73,8 @@ export type EditorPaneHandle = {
   findPrevious: () => void;
   clearQuery: () => void;
   focus: () => void;
+  /** Select and center the given 1-based line, buffering until the doc loads. */
+  gotoLine: (line: number) => void;
   getSelection: () => string | null;
   getPath: () => string;
   /** Re-read the file from disk. Skips silently if the buffer is dirty. */
@@ -101,6 +103,19 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
+    // A line requested before the view exists (file still loading) is buffered
+    // here and flushed by `onCreateEditor` once CodeMirror mounts.
+    const pendingLineRef = useRef<number | null>(null);
+
+    const revealLine = useCallback((view: EditorView, line: number) => {
+      const target = Math.max(1, Math.min(line, view.state.doc.lines));
+      const lineObj = view.state.doc.line(target);
+      view.dispatch({
+        selection: { anchor: lineObj.from },
+        effects: EditorView.scrollIntoView(lineObj.from, { y: "center" }),
+      });
+      view.focus();
+    }, []);
     const editorThemeId = usePreferencesStore((s) => s.editorTheme);
     const customEditorThemes = useCustomEditorThemesStore((s) => s.customEditorThemes);
     const vimMode = usePreferencesStore((s) => s.vimMode);
@@ -388,6 +403,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         focus: () => {
           cmRef.current?.view?.focus();
         },
+        gotoLine: (line: number) => {
+          const view = cmRef.current?.view;
+          if (view) revealLine(view, line);
+          else pendingLineRef.current = line;
+        },
         getSelection: () => {
           const view = cmRef.current?.view;
           if (!view) return null;
@@ -406,7 +426,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
           if (view) redo(view);
         },
       }),
-      [path],
+      [path, revealLine],
     );
 
     if (doc.status === "loading") {
@@ -465,6 +485,14 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
             ref={cmRef}
             value={doc.content}
             onChange={handleChange}
+            onCreateEditor={(view) => {
+              const pending = pendingLineRef.current;
+              if (pending != null) {
+                pendingLineRef.current = null;
+                // Defer one frame so the layout/scroll geometry is settled.
+                requestAnimationFrame(() => revealLine(view, pending));
+              }
+            }}
             theme={themeExt}
             extensions={extensions}
             height="100%"
