@@ -27,6 +27,12 @@ export type SlotAdapter = {
 
 export type LeafBridge = {
   writeToPty(data: string): void;
+  // Paste clipboard text to the PTY, wrapping in bracketed-paste markers
+  // (ESC[200~ / ESC[201~) iff the *application* currently has DECSET 2004 on.
+  // That state is tracked on the session from PTY output, so it is correct
+  // even after the renderer slot was reset()/stolen on a terminal switch —
+  // unlike slot.term's own (resettable) bracketed-paste mode.
+  pasteText(text: string): void;
   resizePty(cols: number, rows: number): void;
   // Force a SIGWINCH on the underlying PTY at the given dims. Implemented
   // as a +1 row / restore bump because the Linux kernel suppresses winsize
@@ -211,7 +217,13 @@ function createSlot(): Slot {
         void navigator.clipboard
           .readText()
           .then((text) => {
-            if (text) slot.term.paste(text);
+            // Route through the session (not slot.term.paste): the session
+            // tracks the *application's* bracketed-paste state, which survives
+            // the slot reset()/steal on terminal switch. slot.term's own mode
+            // is wiped by reset() and frequently never re-synced, which made
+            // multi-line pastes into a switched-to Claude Code collapse to a
+            // single line. See LeafBridge.pasteText.
+            if (text) bridge.pasteText(text);
           })
           .catch(() => {});
       }

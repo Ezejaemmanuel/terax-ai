@@ -63,6 +63,12 @@ type Session = {
   // recent release, replayed on the next bind so the pool's reset() can't strip
   // them from a reattached main-screen app. Null until the first release.
   modesAtRelease: PreservedModes | null;
+  // The *application's* live bracketed-paste (DECSET 2004) state, tracked by
+  // sniffing PTY output. Unlike slot.term's mode this survives the slot
+  // reset()/steal on a terminal switch, so paste keeps wrapping multi-line
+  // clipboard content for a switched-to TUI (Claude Code, REPLs). See
+  // deliverPtyBytes and the pasteText bridge method.
+  bracketedPaste: boolean;
 };
 
 const sessions = new Map<number, Session>();
@@ -155,6 +161,22 @@ configureRendererPool({
       writeToPty: (data) => {
         s.pty?.write(data);
       },
+      pasteText: (text) => {
+        if (!s.pty) return;
+        // Mirror xterm's own paste normalization: collapse CRLF/CR/LF to a
+        // single CR (what Enter sends), then bracket only when the app asked
+        // for it. We use the session-tracked flag rather than slot.term's mode
+        // so it stays correct across the slot reset()/steal on terminal switch.
+        const body = text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
+        if (s.bracketedPaste) {
+          // Defang any embedded ESC so pasted content can't smuggle its own
+          // control sequences (incl. a forged ESC[201~ paste terminator).
+          const safe = body.replace(/\x1b/g, "␛");
+          void s.pty.write(`\x1b[200~${safe}\x1b[201~`);
+        } else {
+          void s.pty.write(body);
+        }
+      },
       resizePty: (cols, rows) => {
         s.cols = cols;
         s.rows = rows;
@@ -215,6 +237,7 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     gotFirstByte: false,
     altScreenAtRelease: false,
     modesAtRelease: null,
+    bracketedPaste: false,
   };
   sessions.set(leafId, session);
 
@@ -233,9 +256,40 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
   return session;
 }
 
+// ESC [ ? 2 0 0 4  — the DECSET 2004 (bracketed paste) sequence, minus its
+// final byte ('h' enable / 'l' disable).
+const BRACKETED_PASTE_PREFIX = [0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x30, 0x34];
+
+// Track the application's bracketed-paste state from its own output. Scans for
+// ESC[?2004h / ESC[?2004l; last match in the chunk wins. Cheap: the inner loop
+// only engages at an ESC byte. A marker split across two PTY reads is missed,
+// but apps emit it as one write at startup so this is correct in practice.
+function scanBracketedPaste(bytes: Uint8Array, current: boolean): boolean {
+  let state = current;
+  // Last index where prefix (7 bytes) + final byte (1) still fit.
+  const last = bytes.length - BRACKETED_PASTE_PREFIX.length - 1;
+  for (let i = 0; i <= last; i++) {
+    if (bytes[i] !== 0x1b) continue;
+    let match = true;
+    for (let j = 1; j < BRACKETED_PASTE_PREFIX.length; j++) {
+      if (bytes[i + j] !== BRACKETED_PASTE_PREFIX[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (!match) continue;
+    const final = bytes[i + BRACKETED_PASTE_PREFIX.length];
+    if (final === 0x68) state = true; // 'h'
+    else if (final === 0x6c) state = false; // 'l'
+    i += BRACKETED_PASTE_PREFIX.length;
+  }
+  return state;
+}
+
 function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
   const s = sessions.get(leafId);
   if (!s) return;
+  s.bracketedPaste = scanBracketedPaste(bytes, s.bracketedPaste);
   if (!s.gotFirstByte) {
     s.gotFirstByte = true;
     console.debug(
@@ -445,6 +499,7 @@ export async function respawnSession(
   // A respawn is a brand-new shell — don't let the dead app's modes (e.g. a
   // crashed Claude Code's bracketed paste) leak into it on the next bind.
   s.modesAtRelease = null;
+  s.bracketedPaste = false;
   s.dormantRing = new DormantRing(
     dormantByteCapForScrollback(usePreferencesStore.getState().terminalScrollback),
   );
