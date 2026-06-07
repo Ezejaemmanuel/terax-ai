@@ -273,6 +273,10 @@ export type AcquireParams = {
   // at the time it was released. When set, bindSlot skips ring replay
   // and kicks SIGWINCH so the TUI repaints from scratch.
   altScreen: boolean;
+  // Input modes captured at the previous release, replayed after reset() so a
+  // reattached main-screen app keeps bracketed paste / app-cursor-keys. Null on
+  // the first bind (no prior release).
+  modes: PreservedModes | null;
   drainRing: (write: (bytes: Uint8Array) => void) => void;
   shellExited: boolean;
   searchQuery: string | null;
@@ -341,6 +345,17 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     } catch (e) {
       console.warn("[terax] snapshot replay failed:", e);
     }
+  }
+  // Re-assert the modes that were live at release as the baseline (reset() wiped
+  // them). Written before the ring drain so any mode toggle that happened while
+  // detached replays on top as a delta — but if the original enabling sequence
+  // has scrolled out of the capped ring, this baseline keeps e.g. bracketed
+  // paste alive so pasting into a switched-to Claude Code still works.
+  const modeRestore = modeRestoreSequence(p.modes);
+  if (modeRestore) {
+    try {
+      slot.term.write(modeRestore);
+    } catch {}
   }
   if (p.altScreen) {
     // Discard the dormant ring. TUI output is incremental cursor-positioned
@@ -461,8 +476,40 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
   slot.observer.observe(container);
 }
 
+// Private (DECSET) input modes that a main-screen app sets once and never
+// re-asserts — unlike alt-screen TUIs, which repaint (and re-emit their modes)
+// on the SIGWINCH kick. The pool's `term.reset()` on reattach wipes these, so
+// we capture them at release and replay them after reset/snapshot. Bracketed
+// paste (2004) is the important one: without it a multi-line paste loses its
+// ESC[200~/201~ wrappers and the app (Claude Code, REPLs) treats every newline
+// as Enter — the "only the last line pastes, no [Pasted +N lines]" bug.
+export type PreservedModes = {
+  bracketedPaste: boolean;
+  appCursorKeys: boolean;
+  sendFocus: boolean;
+};
+
+function captureModes(term: Terminal): PreservedModes {
+  const m = term.modes;
+  return {
+    bracketedPaste: m.bracketedPasteMode,
+    appCursorKeys: m.applicationCursorKeysMode,
+    sendFocus: m.sendFocusMode,
+  };
+}
+
+function modeRestoreSequence(modes: PreservedModes | null): string {
+  if (!modes) return "";
+  let seq = "";
+  if (modes.bracketedPaste) seq += "\x1b[?2004h";
+  if (modes.appCursorKeys) seq += "\x1b[?1h";
+  if (modes.sendFocus) seq += "\x1b[?1004h";
+  return seq;
+}
+
 export type SerializeOutput = {
   snapshot: string | null;
+  modes: PreservedModes;
   cols: number;
   rows: number;
   altScreen: boolean;
@@ -489,6 +536,7 @@ function serializeSlot(slot: Slot): SerializeOutput {
   }
   return {
     snapshot,
+    modes: captureModes(slot.term),
     cols: slot.term.cols,
     rows: slot.term.rows,
     altScreen: isAltScreen(slot),

@@ -25,6 +25,7 @@ import {
   getSlotForLeaf,
   releaseSlot,
   setSlotFocused,
+  type PreservedModes,
 } from "./rendererPool";
 
 type Callbacks = {
@@ -58,6 +59,10 @@ type Session = {
   // at the most recent release. Read once on the next bind to trigger a
   // SIGWINCH-driven repaint instead of replaying dormant bytes.
   altScreenAtRelease: boolean;
+  // Input modes (bracketed paste, app cursor keys, focus) captured at the most
+  // recent release, replayed on the next bind so the pool's reset() can't strip
+  // them from a reattached main-screen app. Null until the first release.
+  modesAtRelease: PreservedModes | null;
 };
 
 const sessions = new Map<number, Session>();
@@ -209,6 +214,7 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     hasSlot: false,
     gotFirstByte: false,
     altScreenAtRelease: false,
+    modesAtRelease: null,
   };
   sessions.set(leafId, session);
 
@@ -279,6 +285,7 @@ function bindLeafToSlot(leafId: number, s: Session): void {
     container: s.container,
     snapshot: s.snapshot,
     altScreen,
+    modes: s.modesAtRelease,
     drainRing: (write) => s.dormantRing.drain(write),
     shellExited: s.shellExited,
     searchQuery: s.searchQuery,
@@ -329,6 +336,7 @@ function bindLeafToSlot(leafId: number, s: Session): void {
     onSearchReady: (addon) => s.callbacks.onSearchReady?.(addon),
   });
   s.snapshot = null;
+  s.modesAtRelease = null;
   s.hasSlot = true;
   if (s.lastCwd !== null) s.callbacks.onCwd?.(s.lastCwd);
   if (s.pendingExit !== null) {
@@ -343,6 +351,7 @@ function unbindLeafFromSlot(leafId: number, s: Session): void {
   const out = releaseSlot(leafId);
   if (out) {
     s.snapshot = out.snapshot;
+    s.modesAtRelease = out.modes;
     if (out.cols > 0) s.cols = out.cols;
     if (out.rows > 0) s.rows = out.rows;
     s.altScreenAtRelease = out.altScreen;
@@ -433,6 +442,9 @@ export async function respawnSession(
   s.pty?.close();
   s.pty = null;
   s.snapshot = null;
+  // A respawn is a brand-new shell — don't let the dead app's modes (e.g. a
+  // crashed Claude Code's bracketed paste) leak into it on the next bind.
+  s.modesAtRelease = null;
   s.dormantRing = new DormantRing(
     dormantByteCapForScrollback(usePreferencesStore.getState().terminalScrollback),
   );
