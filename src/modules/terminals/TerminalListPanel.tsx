@@ -352,7 +352,12 @@ export const TerminalListPanel = memo(function TerminalListPanel({
             )}
             <button
               type="button"
-              onClick={() => onSelect(tab.id)}
+              // Select on pointer-down rather than click: the row is `draggable`,
+              // and a native drag cancels the subsequent `click` if the pointer
+              // moves even a pixel between press and release — which made
+              // switching terminals require several tries. pointerdown fires
+              // before drag detection begins, so a single press always switches.
+              onPointerDown={() => onSelect(tab.id)}
               className="flex min-w-0 flex-1 items-start gap-2 text-left"
             >
               {agentSession ? (
