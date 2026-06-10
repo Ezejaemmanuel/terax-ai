@@ -192,7 +192,6 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     [tabs],
   );
   const [agentFilter, setAgentFilter] = useState<"all" | "claude" | "command-code">("all");
-  const [showFilter, setShowFilter] = useState(false);
   const filteredTerminalTabs = useMemo(() => {
     if (agentFilter === "all") return terminalTabs;
     if (agentFilter === "claude") return terminalTabs.filter(t => t.claudeSession);
@@ -223,7 +222,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
         return a.i - b.i;
       })
       .map((x) => x.g);
-  }, [terminalTabs, agentSessions]);
+  }, [filteredTerminalTabs, agentSessions]);
 
   // While the pointer is over the list, freeze only the ORDER (of both groups
   // and the terminals inside them) so a row can't shift out from under the
@@ -448,8 +447,8 @@ export const TerminalListPanel = memo(function TerminalListPanel({
         <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => setShowFilter(!showFilter)}
-            title={showFilter ? "Hide agent filter" : "Filter by agent"}
+            onClick={() => setAgentFilter(f => f === "all" ? "claude" : f === "claude" ? "command-code" : "all")}
+            title={agentFilter === "all" ? "Filter: All terminals" : agentFilter === "claude" ? "Filter: Claude only" : "Filter: Command Code only"}
             className={cn(
               "shrink-0 rounded p-0.5 transition-colors hover:bg-accent/60",
               agentFilter !== "all" ? "text-foreground" : "text-muted-foreground/50",
@@ -473,26 +472,6 @@ export const TerminalListPanel = memo(function TerminalListPanel({
           </button>
         </div>
       </div>
-      {showFilter && (
-        <div className="flex shrink-0 items-center gap-1 border-b border-border/50 px-3 pb-2">
-          {(["all", "claude", "command-code"] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => setAgentFilter(f)}
-              className={cn(
-                "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
-                agentFilter === f
-                  ? "bg-foreground/[0.08] text-foreground"
-                  : "text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.04]",
-              )}
-            >
-              {f === "all" ? "All" : f === "claude" ? "Claude" : "CC"}
-            </button>
-          ))}
-        </div>
-      )}
-
       <div
         className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
         onMouseEnter={() => setPointerInside(true)}

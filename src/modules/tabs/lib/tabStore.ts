@@ -15,6 +15,10 @@ export type PersistedTab = {
   claudeSession?: boolean;
   /** Exact Claude session id bound to this terminal, for precise resume. */
   claudeSessionId?: string;
+  /** Terminal launched as a Command Code session. */
+  commandCodeSession?: boolean;
+  /** Command Code session title for resume + display. */
+  commandCodeSessionTitle?: string;
 };
 
 export type PersistedSession = {
