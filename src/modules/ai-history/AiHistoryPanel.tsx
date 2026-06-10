@@ -506,9 +506,7 @@ const SessionRow = memo(function SessionRow({
             disabled={isOpening}
             className={cn(
               "flex w-full items-center gap-2 px-4 py-1.5 pr-8 text-left transition-colors",
-              isFirst
-                ? "text-foreground hover:bg-accent/40"
-                : "text-muted-foreground hover:bg-accent/25 hover:text-foreground",
+              "text-muted-foreground hover:bg-accent/25 hover:text-foreground",
               isOpening && "opacity-60",
             )}
           >
