@@ -1,7 +1,7 @@
 {
   "name": "terax",
   "private": true,
-  "version": "0.7.19-jatique-57",
+  "version": "0.7.20-jatique-58",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {

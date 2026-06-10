@@ -86,6 +86,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     search,
     setSearch,
     collapsed,
+    expanded,
     toggleCollapse,
     toggleExpand,
     visibleSessions,
@@ -336,6 +337,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
                   key={project.fullPath}
                   project={project}
                   isCollapsed={collapsed.has(project.fullPath)}
+                  isExpanded={expanded.has(project.fullPath)}
                   liveStatus={liveInfo.status}
                   sessionStatuses={sessionStatuses}
                   onToggleCollapse={() => toggleCollapse(project.fullPath)}
@@ -364,6 +366,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
 type ProjectRowProps = {
   project: AiProject;
   isCollapsed: boolean;
+  isExpanded: boolean;
   liveStatus: LiveStatus;
   sessionStatuses: Map<string, AgentStatus>;
   onToggleCollapse: () => void;
@@ -381,6 +384,7 @@ type ProjectRowProps = {
 const ProjectRow = memo(function ProjectRow({
   project,
   isCollapsed,
+  isExpanded,
   liveStatus,
   sessionStatuses,
   onToggleCollapse,
@@ -467,6 +471,15 @@ const ProjectRow = memo(function ProjectRow({
               className="w-full px-6 py-1 text-left text-[11px] text-muted-foreground/60 hover:text-foreground"
             >
               Show {hiddenCount} more
+            </button>
+          )}
+          {isExpanded && (
+            <button
+              type="button"
+              onClick={onShowMore}
+              className="w-full px-6 py-1 text-left text-[11px] text-muted-foreground/60 hover:text-foreground"
+            >
+              Show less
             </button>
           )}
         </div>

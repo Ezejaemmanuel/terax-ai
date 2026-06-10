@@ -156,6 +156,7 @@ export function useAiHistory(tool: "claude" | "codex" | "command-code") {
     search,
     setSearch,
     collapsed,
+    expanded,
     toggleCollapse,
     toggleExpand,
     visibleSessions,
