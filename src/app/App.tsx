@@ -1805,21 +1805,12 @@ export default function App() {
                           })
                         }
                       />
-                    ) : sidebarView === "codex-history" ? (
+                    ) : sidebarView === "command-code-history" ? (
                       <AiHistoryPanel
-                        tool="codex"
+                        tool="command-code"
                         newTab={newTab}
                         setActiveId={setActiveId}
                         tabs={tabs}
-                        onViewChanges={(session) =>
-                          openAiSessionDiffTab({
-                            sessionId: session.id,
-                            jsonlPath: session.jsonlPath,
-                            cwd: session.cwd,
-                            sessionTitle: session.title,
-                            tool: "codex",
-                          })
-                        }
                       />
                     ) : null}
                   </div>

@@ -198,6 +198,7 @@ pub fn run() {
             ai_history::claude_latest_session,
             ai_history::claude_session_title,
             ai_history::ai_history_codex,
+            ai_history::ai_history_command_code,
             ai_history::ai_history_watch,
             ai_history::session_changed_files,
             ai_history::session_check_git,

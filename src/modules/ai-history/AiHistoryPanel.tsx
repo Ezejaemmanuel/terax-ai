@@ -36,7 +36,7 @@ import { watchForHookMarker } from "@/modules/agents/lib/hookWatchdog";
 import type { AgentStatus } from "@/modules/agents/lib/types";
 
 type Props = {
-  tool: "claude" | "codex";
+  tool: "claude" | "codex" | "command-code";
   newTab: (cwd?: string) => number;
   setActiveId: (id: number) => void;
   tabs: Tab[];
@@ -169,9 +169,9 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         setActiveId(tabId);
         // No chat title yet (the agent derives it later) — show the tool name
         // so the terminal list reads "Claude Code" instead of just the folder.
-        setTabTitle(tabId, tool === "claude" ? "Claude Code" : "Codex");
+        setTabTitle(tabId, tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : "Codex");
         const leafId = tabId + 1;
-        const command = tool === "claude" ? "claude --permission-mode auto" : "codex";
+        const command = tool === "claude" ? "claude --permission-mode auto" : tool === "command-code" ? "command-code" : "codex";
         const sent = await writeWhenReady(leafId, command);
         if (sent && tool === "claude") {
           // Flag as a persistent Claude session only once the command actually
@@ -235,6 +235,8 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         const command =
           tool === "claude"
             ? `claude --resume ${session.id}`
+            : tool === "command-code"
+            ? `command-code --resume "${session.title}"`
             : `codex --resume ${session.id}`;
         const sent = await writeWhenReady(leafId, command);
         // Only record the mapping / flag the session if the command was actually
@@ -257,7 +259,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     [opening, newTab, setActiveId, tabs, tool, getTabId, setMapping, addFolder, projects],
   );
 
-  const label = tool === "claude" ? "Claude Code" : "Codex";
+  const label = tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : "Codex";
 
   return (
     <div className="flex h-full flex-col bg-card/80 backdrop-blur [contain:layout_style]">

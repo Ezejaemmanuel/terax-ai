@@ -33,7 +33,7 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
       badge: changedCount,
     },
     { id: "claude-history", label: "Claude", icon: SparklesIcon },
-    { id: "codex-history", label: "Codex", icon: ComputerTerminal02Icon },
+    { id: "command-code-history", label: "Command Code", icon: ComputerTerminal02Icon },
   ];
 
   return (

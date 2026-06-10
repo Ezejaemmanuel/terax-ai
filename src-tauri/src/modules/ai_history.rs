@@ -391,6 +391,7 @@ fn read_codex_cwd(jsonl_path: &Path) -> Option<String> {
 pub struct AiHistoryWatchState {
     claude: Mutex<Option<RecommendedWatcher>>,
     codex: Mutex<Option<RecommendedWatcher>>,
+    command_code: Mutex<Option<RecommendedWatcher>>,
 }
 
 /// Start a recursive file watcher on the tool's session directory.
@@ -406,11 +407,13 @@ pub fn ai_history_watch(
     let watch_dir = match tool.as_str() {
         "claude" => home.join(".claude").join("projects"),
         "codex" => home.join(".codex"),
+        "command-code" => home.join(".commandcode").join("projects"),
         other => return Err(format!("unknown tool: {other}")),
     };
 
     let slot = match tool.as_str() {
         "claude" => &state.claude,
+        "command-code" => &state.command_code,
         _ => &state.codex,
     };
     let mut guard = slot.lock().expect("ai history watch state poisoned");
@@ -562,6 +565,137 @@ pub async fn ai_history_codex() -> Vec<AiProject> {
             let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
             b_ts.cmp(a_ts)
         });
+        projects
+    })
+    .await
+    .unwrap_or_default()
+}
+
+// ── Command Code history ──────────────────────────────────────────────────────
+
+fn read_commandcode_title(meta_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(meta_path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string())
+}
+
+/// Strips the home-directory prefix from a Command Code encoded folder name so
+/// the display name shows only the project-relative portion.
+/// Encoding: `C:\Users\HP\dev\proj` → `c-users-hp-dev-proj` (colon removed,
+/// separators → hyphen, lowercase).
+fn commandcode_project_display_name(folder_name: &str, home: &Path) -> String {
+    let home_str = home.to_string_lossy();
+    let home_encoded: String = home_str
+        .chars()
+        .filter_map(|c| match c {
+            ':' => None,
+            '\\' | '/' => Some('-'),
+            c => Some(c.to_ascii_lowercase()),
+        })
+        .collect();
+    let home_encoded = home_encoded.trim_matches('-');
+
+    if let Some(rest) = folder_name.strip_prefix(home_encoded) {
+        let rest = rest.trim_start_matches('-');
+        if rest.is_empty() {
+            return home
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| folder_name.to_string());
+        }
+        return rest.to_string();
+    }
+    folder_name.to_string()
+}
+
+#[tauri::command]
+pub async fn ai_history_command_code() -> Vec<AiProject> {
+    tokio::task::spawn_blocking(|| {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return vec![],
+        };
+        let projects_dir = home.join(".commandcode").join("projects");
+        if !projects_dir.exists() {
+            return vec![];
+        }
+
+        let mut projects: Vec<AiProject> = Vec::new();
+
+        let entries = match fs::read_dir(&projects_dir) {
+            Ok(e) => e,
+            Err(_) => return vec![],
+        };
+
+        for entry in entries.flatten() {
+            let project_dir = entry.path();
+            if !project_dir.is_dir() {
+                continue;
+            }
+
+            let folder_name = project_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            let name = commandcode_project_display_name(&folder_name, &home);
+            // Use the encoded folder name as the unique project key.
+            let full_path = folder_name.clone();
+
+            let mut sessions: Vec<AiSession> = Vec::new();
+
+            let session_entries = match fs::read_dir(&project_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for sess_entry in session_entries.flatten() {
+                let path = sess_entry.path();
+                let fname = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+
+                if !fname.ends_with(".meta.json") {
+                    continue;
+                }
+
+                let id = fname.trim_end_matches(".meta.json").to_string();
+                if id.is_empty() {
+                    continue;
+                }
+
+                let title = read_commandcode_title(&path).unwrap_or_else(|| id.clone());
+                let updated_at = file_mtime_ms_str(&path);
+
+                sessions.push(AiSession {
+                    id,
+                    title,
+                    updated_at,
+                    cwd: String::new(),
+                    jsonl_path: String::new(),
+                });
+            }
+
+            if sessions.is_empty() {
+                continue;
+            }
+
+            sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+            projects.push(AiProject {
+                name,
+                full_path,
+                sessions,
+            });
+        }
+
+        projects.sort_by(|a, b| {
+            let a_ts = a.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            b_ts.cmp(a_ts)
+        });
+
         projects
     })
     .await

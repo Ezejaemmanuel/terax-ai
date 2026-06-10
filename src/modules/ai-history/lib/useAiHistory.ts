@@ -38,7 +38,7 @@ export { relativeTime };
 
 const SESSIONS_INITIAL = 6;
 
-export function useAiHistory(tool: "claude" | "codex") {
+export function useAiHistory(tool: "claude" | "codex" | "command-code") {
   const [projects, setProjects] = useState<AiProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +56,7 @@ export function useAiHistory(tool: "claude" | "codex") {
     setExpanded(new Set());
     loadedTool.current = tool;
 
-    const command = tool === "claude" ? "ai_history_claude" : "ai_history_codex";
+    const command = tool === "claude" ? "ai_history_claude" : tool === "command-code" ? "ai_history_command_code" : "ai_history_codex";
     invoke<RawProject[]>(command)
       .then((raw) => {
         if (loadedTool.current !== tool) return; // stale
@@ -72,7 +72,7 @@ export function useAiHistory(tool: "claude" | "codex") {
 
   // Silent background refresh — no loading spinner, just updates the list.
   const refreshProjects = useCallback(() => {
-    const command = tool === "claude" ? "ai_history_claude" : "ai_history_codex";
+    const command = tool === "claude" ? "ai_history_claude" : tool === "command-code" ? "ai_history_command_code" : "ai_history_codex";
     invoke<RawProject[]>(command)
       .then((raw) => setProjects(raw.map(toProject)))
       .catch(() => {});
