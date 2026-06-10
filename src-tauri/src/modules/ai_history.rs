@@ -627,7 +627,7 @@ fn decode_commandcode_path(encoded: &str, home: &Path) -> Option<PathBuf> {
             })
             .collect();
         // Sort longest-first so longer names win over shorter prefixes.
-        names.sort_by(|a, b| b.len().cmp(&a.len()));
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
 
         let mut matched = false;
         for name in &names {
