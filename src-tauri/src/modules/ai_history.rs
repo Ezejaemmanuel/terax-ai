@@ -579,33 +579,76 @@ fn read_commandcode_title(meta_path: &Path) -> Option<String> {
     v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string())
 }
 
-/// Strips the home-directory prefix from a Command Code encoded folder name so
-/// the display name shows only the project-relative portion.
-/// Encoding: `C:\Users\HP\dev\proj` → `c-users-hp-dev-proj` (colon removed,
-/// separators → hyphen, lowercase).
-fn commandcode_project_display_name(folder_name: &str, home: &Path) -> String {
-    let home_str = home.to_string_lossy();
-    let home_encoded: String = home_str
-        .chars()
+/// Encode a single path component the way Command Code does: lowercase,
+/// drop colons, replace separators with hyphens.
+fn encode_path_component(s: &str) -> String {
+    s.chars()
         .filter_map(|c| match c {
             ':' => None,
             '\\' | '/' => Some('-'),
             c => Some(c.to_ascii_lowercase()),
         })
-        .collect();
+        .collect()
+}
+
+/// Greedily walk the real filesystem to decode a Command Code encoded folder
+/// name back to the absolute path it originally represented.
+///
+/// Command Code encodes `C:\Users\HP\dev\my-proj` as `c-users-hp-dev-my-proj`
+/// (colon removed, separators → `-`, lowercased). Because folder names can also
+/// contain hyphens, we can't simply split on `-`; instead we read actual
+/// directory entries at each level and try the longest match first.
+///
+/// Returns the decoded `PathBuf` when every segment resolves on disk, or `None`
+/// when the project directory no longer exists.
+fn decode_commandcode_path(encoded: &str, home: &Path) -> Option<PathBuf> {
+    let home_encoded = encode_path_component(&home.to_string_lossy());
     let home_encoded = home_encoded.trim_matches('-');
 
-    if let Some(rest) = folder_name.strip_prefix(home_encoded) {
-        let rest = rest.trim_start_matches('-');
-        if rest.is_empty() {
-            return home
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| folder_name.to_string());
-        }
-        return rest.to_string();
+    let relative_encoded = encoded.strip_prefix(home_encoded)?.trim_start_matches('-');
+    if relative_encoded.is_empty() {
+        return if home.is_dir() { Some(home.to_path_buf()) } else { None };
     }
-    folder_name.to_string()
+
+    let mut current = home.to_path_buf();
+    let mut remaining = relative_encoded;
+
+    while !remaining.is_empty() {
+        // Collect subdirectory names under `current`.
+        let mut names: Vec<String> = fs::read_dir(&current)
+            .ok()?
+            .flatten()
+            .filter_map(|e| {
+                if e.path().is_dir() {
+                    e.file_name().to_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Sort longest-first so longer names win over shorter prefixes.
+        names.sort_by(|a, b| b.len().cmp(&a.len()));
+
+        let mut matched = false;
+        for name in &names {
+            let enc = encode_path_component(name);
+            if remaining.starts_with(enc.as_str()) {
+                let after = &remaining[enc.len()..];
+                if after.is_empty() || after.starts_with('-') {
+                    current = current.join(name);
+                    remaining = after.trim_start_matches('-');
+                    matched = true;
+                    break;
+                }
+            }
+        }
+
+        if !matched {
+            return None;
+        }
+    }
+
+    if current.is_dir() { Some(current) } else { None }
 }
 
 #[tauri::command]
@@ -638,9 +681,17 @@ pub async fn ai_history_command_code() -> Vec<AiProject> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
 
-            let name = commandcode_project_display_name(&folder_name, &home);
-            // Use the encoded folder name as the unique project key.
-            let full_path = folder_name.clone();
+            // Decode the encoded folder name to the real filesystem path so
+            // the "+" button opens a terminal in the right directory.
+            let (full_path, name) = if let Some(real) = decode_commandcode_path(&folder_name, &home) {
+                let s = real.to_string_lossy().into_owned();
+                let n = short_name(&s);
+                (s, n)
+            } else {
+                // Project folder deleted or path can't be decoded; show the
+                // encoded name as a fallback and use it as the key.
+                (folder_name.clone(), folder_name.clone())
+            };
 
             let mut sessions: Vec<AiSession> = Vec::new();
 
@@ -672,7 +723,7 @@ pub async fn ai_history_command_code() -> Vec<AiProject> {
                     id,
                     title,
                     updated_at,
-                    cwd: String::new(),
+                    cwd: full_path.clone(),
                     jsonl_path: String::new(),
                 });
             }
