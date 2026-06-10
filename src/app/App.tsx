@@ -236,6 +236,7 @@ export default function App() {
   // launches + restored sessions), so the restore effect resumes each exactly
   // once and never double-fires into a terminal that's already running Claude.
   const startedClaudeLeavesRef = useRef<Set<number>>(new Set());
+  const startedCommandCodeLeavesRef = useRef<Set<number>>(new Set());
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -552,6 +553,30 @@ export default function App() {
     [],
   );
 
+  const startCommandCodeInLeaf = useCallback(
+    async (
+      cwd: string | undefined,
+      leafId: number,
+      opts?: { knownSessionTitle?: string; fresh?: boolean },
+    ) => {
+      const sessionTitle = opts?.fresh
+        ? null
+        : (opts?.knownSessionTitle ?? null);
+      const cmd = sessionTitle
+        ? `command-code --resume "${sessionTitle}"`
+        : "command-code";
+      uiLog(
+        "info",
+        `launching command-code in leaf ${leafId} (${
+          sessionTitle ? `resume ${sessionTitle}` : "fresh session"
+        }) cwd=${cwd ?? "?"}`,
+      );
+      await writeCommandToSessionWhenReady(leafId, cmd);
+      watchForHookMarker(leafId);
+    },
+    [],
+  );
+
   // Re-link every persisted Claude session id up front so the badge, title, and
   // "jump to running terminal" matching work immediately on restore — this needs
   // no PTY, just the mapping.
@@ -559,6 +584,10 @@ export default function App() {
     for (const t of tabs) {
       if (t.kind !== "terminal" || !t.claudeSession || !t.claudeSessionId) continue;
       useSessionTabStore.getState().linkSession(t.claudeSessionId, t.id);
+    }
+    for (const t of tabs) {
+      if (t.kind !== "terminal" || !t.commandCodeSession || !t.commandCodeSessionTitle) continue;
+      useSessionTabStore.getState().setTabTitle(t.id, t.commandCodeSessionTitle);
     }
   }, [tabs]);
 
@@ -578,6 +607,17 @@ export default function App() {
       knownSessionId: t.claudeSessionId,
     });
   }, [activeTerminalTab, startClaudeInLeaf]);
+
+  useEffect(() => {
+    const t = activeTerminalTab;
+    if (!t || !t.commandCodeSession) return;
+    const leafId = t.activeLeafId;
+    if (startedCommandCodeLeavesRef.current.has(leafId)) return;
+    startedCommandCodeLeavesRef.current.add(leafId);
+    void startCommandCodeInLeaf(t.cwd, leafId, {
+      knownSessionTitle: t.commandCodeSessionTitle,
+    });
+  }, [activeTerminalTab, startCommandCodeInLeaf]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
@@ -1379,6 +1419,23 @@ export default function App() {
     focusInput(null);
   }, [openPanel, focusInput]);
 
+  // Mark a terminal as a live Command Code session.
+  const bindCommandCodeTerminal = useCallback(
+    (tabId: number, leafId: number, sessionTitle?: string) => {
+      startedCommandCodeLeavesRef.current.add(leafId);
+      updateTab(tabId, {
+        commandCodeSession: true,
+        ...(sessionTitle ? { commandCodeSessionTitle: sessionTitle } : {}),
+      });
+      if (sessionTitle) {
+        useSessionTabStore.getState().setTabTitle(tabId, sessionTitle);
+        useSessionTabStore.getState().linkSession(sessionTitle, tabId);
+        updateTab(tabId, { title: sessionTitle });
+      }
+    },
+    [updateTab],
+  );
+
   // Mark a terminal as a live Claude session. Used by both the agent-hook
   // binding (once the session id is known) and the AI-history launches (at
   // launch time). It:
@@ -1811,6 +1868,16 @@ export default function App() {
                         newTab={newTab}
                         setActiveId={setActiveId}
                         tabs={tabs}
+                        onClaudeLaunch={bindCommandCodeTerminal}
+                        onViewChanges={(session) =>
+                          openAiSessionDiffTab({
+                            sessionId: session.id,
+                            jsonlPath: session.jsonlPath,
+                            cwd: session.cwd,
+                            sessionTitle: session.title,
+                            tool: "command-code",
+                          })
+                        }
                       />
                     ) : null}
                   </div>
@@ -1881,6 +1948,16 @@ export default function App() {
                     startedClaudeLeavesRef.current.add(leafId);
                     // The folder icon launches a NEW session, never resumes.
                     void startClaudeInLeaf(cwd, leafId, { fresh: true });
+                  }}
+                  onLaunchCommandCodeInFolder={(cwd) => {
+                    const base =
+                      cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "shell";
+                    const { tabId, leafId } = newAgentTab(cwd, `cc · ${base}`, {
+                      commandCodeSession: true,
+                    });
+                    setActiveId(tabId);
+                    startedCommandCodeLeavesRef.current.add(leafId);
+                    void startCommandCodeInLeaf(cwd, leafId, { fresh: true });
                   }}
                 />
               </ResizablePanel>

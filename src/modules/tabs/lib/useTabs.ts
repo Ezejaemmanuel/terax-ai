@@ -33,6 +33,8 @@ export type TerminalTab = {
    * Persisted so restore resumes this precise conversation, not just the
    * folder's latest. */
   claudeSessionId?: string;
+  commandCodeSession?: boolean;
+  commandCodeSessionTitle?: string;
 };
 
 export type EditorTab = {
@@ -129,7 +131,7 @@ export type AiSessionDiffTab = {
   sessionId: string;
   jsonlPath: string;
   cwd: string;
-  tool: "claude" | "codex";
+  tool: "claude" | "codex" | "command-code";
   pinned?: boolean;
   color?: string;
 };
@@ -155,6 +157,8 @@ export type TabPatch = Partial<{
   color: string | null;
   claudeSession: boolean;
   claudeSessionId: string;
+  commandCodeSession: boolean;
+  commandCodeSessionTitle: string;
 }>;
 
 function basename(path: string): string {
@@ -225,7 +229,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     (
       cwd: string | undefined,
       title: string,
-      opts?: { claudeSession?: boolean },
+      opts?: { claudeSession?: boolean; commandCodeSession?: boolean },
     ) => {
       const tabId = nextIdRef.current++;
       const leafId = nextIdRef.current++;
@@ -239,6 +243,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           paneTree: { kind: "leaf", id: leafId, cwd },
           activeLeafId: leafId,
           claudeSession: opts?.claudeSession,
+          commandCodeSession: opts?.commandCodeSession,
         },
       ]);
       setActiveId(tabId);
@@ -644,6 +649,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             ...(patch.claudeSessionId !== undefined && {
               claudeSessionId: patch.claudeSessionId,
             }),
+            ...(patch.commandCodeSession !== undefined && {
+              commandCodeSession: patch.commandCodeSession,
+            }),
+            ...(patch.commandCodeSessionTitle !== undefined && {
+              commandCodeSessionTitle: patch.commandCodeSessionTitle,
+            }),
           };
         }
         if (x.kind === "preview") {
@@ -901,7 +912,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       jsonlPath: string;
       cwd: string;
       sessionTitle: string;
-      tool: "claude" | "codex";
+      tool: "claude" | "codex" | "command-code";
     }) => {
       const curr = tabsRef.current;
       const existing = curr.find(

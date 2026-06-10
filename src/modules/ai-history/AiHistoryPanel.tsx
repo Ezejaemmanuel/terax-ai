@@ -142,7 +142,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         const normalizedCwd = cwd.replace(/\\/g, "/").replace(/\/$/, "");
         if (normalizedTabCwd === normalizedCwd) {
           const session = agentSessions[leafId];
-          if (session) {
+          if (session && !session.acknowledged) {
             return { status: session.status as LiveStatus, tabId: tab.id };
           }
         }
@@ -175,9 +175,10 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         const command = tool === "claude" ? "claude --permission-mode auto" : tool === "command-code" ? "command-code" : "codex";
         const sent = await writeWhenReady(leafId, command);
         if (sent && tool === "claude") {
-          // Flag as a persistent Claude session only once the command actually
-          // landed — a timeout must not leave the tab marked as a live session
-          // with no Claude process. The hook fills in the exact session id.
+          onClaudeLaunch?.(tabId, leafId);
+          watchForHookMarker(leafId);
+        }
+        if (sent && tool === "command-code") {
           onClaudeLaunch?.(tabId, leafId);
           watchForHookMarker(leafId);
         }
@@ -206,7 +207,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
       const tab = tabs.find((t) => t.id === tabId);
       if (tab && tab.kind === "terminal") {
         const session = agentSessions[(tab as TerminalTab).activeLeafId];
-        if (session) m.set(sessionId, session.status);
+        if (session && !session.acknowledged) m.set(sessionId, session.status);
       }
     }
     return m;
@@ -245,9 +246,11 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         // we don't lock the session to a tab that has no Claude process.
         if (sent) {
           if (tool === "claude") {
-            // Flag as a persistent Claude session with the exact id, so it
-            // resumes precisely on restart even if closed before the hook fires.
             onClaudeLaunch?.(tabId, leafId, session.id);
+            watchForHookMarker(leafId);
+          }
+          if (tool === "command-code") {
+            onClaudeLaunch?.(tabId, leafId, session.title);
             watchForHookMarker(leafId);
           }
           setMapping(session.id, tabId, session.title);
@@ -501,7 +504,7 @@ type SessionRowProps = {
 const SessionRow = memo(function SessionRow({
   session,
   liveStatus,
-  isFirst,
+  isFirst: _isFirst,
   isOpening,
   onOpen,
   onCopyId,

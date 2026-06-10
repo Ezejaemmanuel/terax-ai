@@ -1,6 +1,7 @@
 import {
   ChatGptIcon,
   ClaudeIcon,
+  CommandLineIcon,
   RoboticIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -8,6 +9,8 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 function iconFor(agent: string): IconSvgElement {
   const a = agent.toLowerCase();
   if (a.includes("claude")) return ClaudeIcon;
+  if (a.includes("command-code") || a.includes("commandcode"))
+    return CommandLineIcon;
   if (a.includes("codex") || a.includes("gpt") || a.includes("openai"))
     return ChatGptIcon;
   return RoboticIcon;

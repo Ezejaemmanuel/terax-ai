@@ -10,6 +10,7 @@ import type { Tab, TerminalTab } from "@/modules/tabs/lib/useTabs";
 import {
   Add01Icon,
   Cancel01Icon,
+  CommandLineIcon,
   ComputerTerminal02Icon,
   Copy01Icon,
   Folder01Icon,
@@ -39,6 +40,8 @@ type Props = {
   onNewInFolder?: (cwd: string) => void;
   /** Open a new terminal in a folder group and launch Claude in it. */
   onLaunchClaudeInFolder?: (cwd: string) => void;
+  /** Open a new terminal in a folder group and launch Command Code in it. */
+  onLaunchCommandCodeInFolder?: (cwd: string) => void;
 };
 
 function cwdBasename(cwd?: string): string {
@@ -176,6 +179,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   onReorder,
   onNewInFolder,
   onLaunchClaudeInFolder,
+  onLaunchCommandCodeInFolder,
 }: Props) {
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
@@ -187,16 +191,23 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     () => tabs.filter((t): t is TerminalTab => t.kind === "terminal"),
     [tabs],
   );
-  const canClose = terminalTabs.length > 1;
+  const [agentFilter, setAgentFilter] = useState<"all" | "claude" | "command-code">("all");
+  const [showFilter, setShowFilter] = useState(false);
+  const filteredTerminalTabs = useMemo(() => {
+    if (agentFilter === "all") return terminalTabs;
+    if (agentFilter === "claude") return terminalTabs.filter(t => t.claudeSession);
+    return terminalTabs.filter(t => t.commandCodeSession);
+  }, [terminalTabs, agentFilter]);
+  const canClose = filteredTerminalTabs.length > 1;
 
   // Recompute the activity order only when the tabs or their statuses change —
   // not on every unrelated re-render (drag indicator, title polling).
   const orderedFlat = useMemo(
-    () => orderByActivity(terminalTabs, agentSessions),
-    [terminalTabs, agentSessions],
+    () => orderByActivity(filteredTerminalTabs, agentSessions),
+    [filteredTerminalTabs, agentSessions],
   );
   const orderedGroups = useMemo(() => {
-    const groups = groupByFolder(terminalTabs).map((group) => ({
+    const groups = groupByFolder(filteredTerminalTabs).map((group) => ({
       group,
       tabs: orderByActivity(group.tabs, agentSessions),
     }));
@@ -295,7 +306,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     // restart) → folder name. The middle fallback lets a restored Claude
     // terminal show its conversation title before the hook re-links.
     const liveTitle = tabTitles.get(tab.id);
-    const persistedTitle = tab.claudeSessionId ? tab.title : undefined;
+    const persistedTitle = (tab.claudeSessionId || tab.commandCodeSessionTitle) ? tab.title : undefined;
     const sessionTitle = liveTitle ?? persistedTitle;
     const label = sessionTitle ?? cwdBasename(tab.cwd);
     const sublabel = sessionTitle ? cwdBasename(tab.cwd) : null;
@@ -434,21 +445,53 @@ export const TerminalListPanel = memo(function TerminalListPanel({
         <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
           Terminals
         </span>
-        <button
-          type="button"
-          onClick={() => void setTerminalsGroupByFolder(!grouped)}
-          title={grouped ? "Grouping by folder" : "Group by folder"}
-          aria-pressed={grouped}
-          className={cn(
-            "shrink-0 rounded p-0.5 transition-colors hover:bg-accent/60",
-            grouped
-              ? "text-foreground"
-              : "text-muted-foreground/50 hover:text-foreground",
-          )}
-        >
-          <HugeiconsIcon icon={FolderLibraryIcon} size={13} strokeWidth={1.75} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setShowFilter(!showFilter)}
+            title={showFilter ? "Hide agent filter" : "Filter by agent"}
+            className={cn(
+              "shrink-0 rounded p-0.5 transition-colors hover:bg-accent/60",
+              agentFilter !== "all" ? "text-foreground" : "text-muted-foreground/50",
+            )}
+          >
+            <HugeiconsIcon icon={CommandLineIcon} size={13} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void setTerminalsGroupByFolder(!grouped)}
+            title={grouped ? "Grouping by folder" : "Group by folder"}
+            aria-pressed={grouped}
+            className={cn(
+              "shrink-0 rounded p-0.5 transition-colors hover:bg-accent/60",
+              grouped
+                ? "text-foreground"
+                : "text-muted-foreground/50 hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={FolderLibraryIcon} size={13} strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
+      {showFilter && (
+        <div className="flex shrink-0 items-center gap-1 border-b border-border/50 px-3 pb-2">
+          {(["all", "claude", "command-code"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setAgentFilter(f)}
+              className={cn(
+                "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
+                agentFilter === f
+                  ? "bg-foreground/[0.08] text-foreground"
+                  : "text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.04]",
+              )}
+            >
+              {f === "all" ? "All" : f === "claude" ? "Claude" : "CC"}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div
         className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
@@ -458,6 +501,10 @@ export const TerminalListPanel = memo(function TerminalListPanel({
         {terminalTabs.length === 0 ? (
           <p className="px-3 py-4 text-center text-[11px] text-muted-foreground/60">
             No terminals open.
+          </p>
+        ) : filteredTerminalTabs.length === 0 ? (
+          <p className="px-3 py-4 text-center text-[11px] text-muted-foreground/60">
+            No matching terminals.
           </p>
         ) : grouped ? (
           <div className="pb-2">
@@ -480,8 +527,18 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                     {group.tabs.length}
                   </span>
                   {group.path &&
-                  (onNewInFolder || onLaunchClaudeInFolder) ? (
+                  (onNewInFolder || onLaunchClaudeInFolder || onLaunchCommandCodeInFolder) ? (
                     <span className="ml-auto flex shrink-0 items-center gap-0.5">
+                      {onLaunchCommandCodeInFolder && (
+                        <button
+                          type="button"
+                          title={`Launch Command Code in ${group.label}`}
+                          onClick={() => onLaunchCommandCodeInFolder(group.path!)}
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
+                        >
+                          <HugeiconsIcon icon={CommandLineIcon} size={12} strokeWidth={2} />
+                        </button>
+                      )}
                       {onLaunchClaudeInFolder && (
                         <button
                           type="button"
