@@ -392,6 +392,7 @@ pub struct AiHistoryWatchState {
     claude: Mutex<Option<RecommendedWatcher>>,
     codex: Mutex<Option<RecommendedWatcher>>,
     command_code: Mutex<Option<RecommendedWatcher>>,
+    cursor: Mutex<Option<RecommendedWatcher>>,
 }
 
 /// Start a recursive file watcher on the tool's session directory.
@@ -408,12 +409,14 @@ pub fn ai_history_watch(
         "claude" => home.join(".claude").join("projects"),
         "codex" => home.join(".codex"),
         "command-code" => home.join(".commandcode").join("projects"),
+        "cursor" => home.join(".cursor").join("chats"),
         other => return Err(format!("unknown tool: {other}")),
     };
 
     let slot = match tool.as_str() {
         "claude" => &state.claude,
         "command-code" => &state.command_code,
+        "cursor" => &state.cursor,
         _ => &state.codex,
     };
     let mut guard = slot.lock().expect("ai history watch state poisoned");
@@ -747,6 +750,143 @@ pub async fn ai_history_command_code() -> Vec<AiProject> {
             b_ts.cmp(a_ts)
         });
 
+        projects
+    })
+    .await
+    .unwrap_or_default()
+}
+
+// Variant hashes for a candidate workspace path. The Cursor CLI keys its chat
+// store on `md5(<workspace path>)` using the path exactly as the OS reports it
+// (native separators, original case). Since the host may carry a cwd with either
+// separator and a trailing slash, we hash a few normalizations and map each back
+// to the original path, so whichever form Cursor used still resolves.
+fn cursor_root_hashes(root: &str) -> Vec<String> {
+    let trimmed = root.trim_end_matches(|c| c == '/' || c == '\\');
+    let mut variants: Vec<String> = vec![
+        trimmed.to_string(),
+        trimmed.replace('/', "\\"),
+        trimmed.replace('\\', "/"),
+    ];
+    variants.sort();
+    variants.dedup();
+    variants
+        .into_iter()
+        .map(|v| format!("{:x}", md5::compute(v.as_bytes())))
+        .collect()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CursorChatMeta {
+    title: Option<String>,
+    #[serde(default)]
+    has_conversation: bool,
+    #[serde(default)]
+    updated_at_ms: u64,
+    #[serde(default)]
+    created_at_ms: u64,
+}
+
+/// History reader for the Cursor CLI agent (`cursor-agent`). Unlike Claude /
+/// Codex / Command Code, Cursor does NOT record the workspace path on disk — it
+/// stores each chat under `~/.cursor/chats/<md5(workspace path)>/<chatId>/` with
+/// a `meta.json` (title + timestamps) and a SQLite `store.db` transcript. Because
+/// the directory name is a one-way hash, we can't enumerate folders from the
+/// store; instead the caller passes the workspace paths the host already knows
+/// (open terminals, active folders), we hash each, and surface the chats that
+/// live under a matching hash. Chats in folders the host doesn't know about are
+/// not shown (there is no way to recover their path from the hash).
+#[tauri::command]
+pub async fn ai_history_cursor(roots: Vec<String>) -> Vec<AiProject> {
+    tokio::task::spawn_blocking(move || {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return vec![],
+        };
+        let chats_dir = home.join(".cursor").join("chats");
+        if !chats_dir.exists() {
+            return vec![];
+        }
+
+        // hash -> real workspace path (first writer wins on collision).
+        let mut hash_to_root: HashMap<String, String> = HashMap::new();
+        for root in &roots {
+            if root.is_empty() {
+                continue;
+            }
+            for h in cursor_root_hashes(root) {
+                hash_to_root.entry(h).or_insert_with(|| root.clone());
+            }
+        }
+
+        let mut projects: Vec<AiProject> = Vec::new();
+
+        for root_entry in fs::read_dir(&chats_dir).into_iter().flatten().flatten() {
+            let root_path = root_entry.path();
+            if !root_path.is_dir() {
+                continue;
+            }
+            let hash = match root_path.file_name().and_then(|n| n.to_str()) {
+                Some(h) => h.to_string(),
+                None => continue,
+            };
+            let Some(workspace) = hash_to_root.get(&hash).cloned() else {
+                continue; // unknown workspace — path not recoverable from the hash
+            };
+
+            let mut sessions: Vec<AiSession> = Vec::new();
+            for chat_entry in fs::read_dir(&root_path).into_iter().flatten().flatten() {
+                let chat_path = chat_entry.path();
+                if !chat_path.is_dir() {
+                    continue;
+                }
+                let chat_id = match chat_path.file_name().and_then(|n| n.to_str()) {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                let meta_path = chat_path.join("meta.json");
+                let Ok(content) = fs::read_to_string(&meta_path) else {
+                    continue;
+                };
+                let Ok(meta) = serde_json::from_str::<CursorChatMeta>(&content) else {
+                    continue;
+                };
+                // Empty chats (created but never used) carry no conversation.
+                if !meta.has_conversation {
+                    continue;
+                }
+                let ts = if meta.updated_at_ms > 0 {
+                    meta.updated_at_ms
+                } else {
+                    meta.created_at_ms
+                };
+                sessions.push(AiSession {
+                    id: chat_id,
+                    title: meta.title.filter(|t| !t.is_empty()).unwrap_or_else(|| "Untitled chat".to_string()),
+                    updated_at: format!("{:020}", ts),
+                    cwd: workspace.clone(),
+                    // Cursor transcripts are SQLite, not JSONL — no session-diff source.
+                    jsonl_path: String::new(),
+                });
+            }
+
+            if sessions.is_empty() {
+                continue;
+            }
+            sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            projects.push(AiProject {
+                name: short_name(&workspace),
+                full_path: workspace,
+                sessions,
+            });
+        }
+
+        projects.sort_by(|a, b| {
+            let a_ts = a.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            let b_ts = b.sessions.first().map(|s| s.updated_at.as_str()).unwrap_or("");
+            b_ts.cmp(a_ts)
+        });
         projects
     })
     .await

@@ -35,6 +35,11 @@ export type TerminalTab = {
   claudeSessionId?: string;
   commandCodeSession?: boolean;
   commandCodeSessionTitle?: string;
+  /** Launched as a Cursor CLI session — on restore it resumes via
+   * `cursor-agent --resume`. */
+  cursorSession?: boolean;
+  /** Exact Cursor chat id bound to this terminal, for precise resume. */
+  cursorSessionId?: string;
 };
 
 export type EditorTab = {
@@ -131,7 +136,7 @@ export type AiSessionDiffTab = {
   sessionId: string;
   jsonlPath: string;
   cwd: string;
-  tool: "claude" | "codex" | "command-code";
+  tool: "claude" | "codex" | "command-code" | "cursor";
   pinned?: boolean;
   color?: string;
 };
@@ -159,6 +164,8 @@ export type TabPatch = Partial<{
   claudeSessionId: string;
   commandCodeSession: boolean;
   commandCodeSessionTitle: string;
+  cursorSession: boolean;
+  cursorSessionId: string;
 }>;
 
 function basename(path: string): string {
@@ -229,7 +236,11 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     (
       cwd: string | undefined,
       title: string,
-      opts?: { claudeSession?: boolean; commandCodeSession?: boolean },
+      opts?: {
+        claudeSession?: boolean;
+        commandCodeSession?: boolean;
+        cursorSession?: boolean;
+      },
     ) => {
       const tabId = nextIdRef.current++;
       const leafId = nextIdRef.current++;
@@ -244,6 +255,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           activeLeafId: leafId,
           claudeSession: opts?.claudeSession,
           commandCodeSession: opts?.commandCodeSession,
+          cursorSession: opts?.cursorSession,
         },
       ]);
       setActiveId(tabId);
@@ -655,6 +667,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             ...(patch.commandCodeSessionTitle !== undefined && {
               commandCodeSessionTitle: patch.commandCodeSessionTitle,
             }),
+            ...(patch.cursorSession !== undefined && {
+              cursorSession: patch.cursorSession,
+            }),
+            ...(patch.cursorSessionId !== undefined && {
+              cursorSessionId: patch.cursorSessionId,
+            }),
           };
         }
         if (x.kind === "preview") {
@@ -912,7 +930,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       jsonlPath: string;
       cwd: string;
       sessionTitle: string;
-      tool: "claude" | "codex" | "command-code";
+      tool: "claude" | "codex" | "command-code" | "cursor";
     }) => {
       const curr = tabsRef.current;
       const existing = curr.find(

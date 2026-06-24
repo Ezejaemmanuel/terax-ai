@@ -1,0 +1,24 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cursor">
+  <defs>
+    <linearGradient id="cursorTop" x1="3.34" y1="7" x2="20.66" y2="7" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0.35"/>
+    </linearGradient>
+    <linearGradient id="cursorRight" x1="12" y1="12" x2="16.3" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0.7"/>
+    </linearGradient>
+    <linearGradient id="cursorLeft" x1="3.34" y1="7" x2="12" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0.2"/>
+    </linearGradient>
+  </defs>
+  <!-- top face -->
+  <path d="M3.34 7 L12 2 L20.66 7 L12 12 Z" fill="url(#cursorTop)"/>
+  <!-- right face -->
+  <path d="M12 12 L20.66 7 L20.66 17 L12 22 Z" fill="url(#cursorRight)"/>
+  <!-- left face -->
+  <path d="M3.34 7 L12 12 L12 22 L3.34 17 Z" fill="url(#cursorLeft)"/>
+  <!-- inner highlight edge -->
+  <path d="M12 12 L20.66 7 M12 12 L12 22 M12 12 L3.34 7" stroke="currentColor" stroke-opacity="0.25" stroke-width="0.4"/>
+</svg>

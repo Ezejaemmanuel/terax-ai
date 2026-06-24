@@ -1,1 +1,1 @@
-export type SidebarViewId = "explorer" | "source-control" | "claude-history" | "codex-history" | "command-code-history";
+export type SidebarViewId = "explorer" | "source-control" | "claude-history" | "codex-history" | "command-code-history" | "cursor-history";

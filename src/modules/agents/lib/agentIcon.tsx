@@ -1,8 +1,8 @@
 import {
   ChatGptIcon,
   ClaudeIcon,
-  CommandLineIcon,
   RoboticIcon,
+  SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
@@ -10,7 +10,7 @@ function iconFor(agent: string): IconSvgElement {
   const a = agent.toLowerCase();
   if (a.includes("claude")) return ClaudeIcon;
   if (a.includes("command-code") || a.includes("commandcode"))
-    return CommandLineIcon;
+    return SourceCodeIcon;
   if (a.includes("codex") || a.includes("gpt") || a.includes("openai"))
     return ChatGptIcon;
   return RoboticIcon;
@@ -25,10 +25,16 @@ export function AgentIcon({
   size?: number;
   className?: string;
 }) {
-  if (agent.toLowerCase().includes("terax")) {
+  const lower = agent.toLowerCase();
+  const brandSrc = lower.includes("terax")
+    ? "/logo.png"
+    : lower.includes("cursor")
+      ? "/cursor.svg"
+      : null;
+  if (brandSrc) {
     return (
       <img
-        src="/logo.png"
+        src={brandSrc}
         alt=""
         width={size}
         height={size}

@@ -5,7 +5,7 @@ const ST_FINAL: u8 = b'\\';
 
 const OSC_MAX: usize = 2048;
 
-const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "command-code"];
+const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "command-code", "cursor-agent"];
 
 // OSC 777 marker our Claude Code hooks emit via `terminalSequence`.
 const TERAX_MARKER: &[u8] = b"notify;Terax;";

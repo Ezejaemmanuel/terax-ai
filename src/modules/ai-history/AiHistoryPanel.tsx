@@ -36,7 +36,7 @@ import { watchForHookMarker } from "@/modules/agents/lib/hookWatchdog";
 import type { AgentStatus } from "@/modules/agents/lib/types";
 
 type Props = {
-  tool: "claude" | "codex" | "command-code";
+  tool: "claude" | "codex" | "command-code" | "cursor";
   newTab: (cwd?: string) => number;
   setActiveId: (id: number) => void;
   tabs: Tab[];
@@ -79,6 +79,24 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
   onClaudeLaunch,
   onViewChanges,
 }: Props) {
+  const addFolder = useActiveFolderStore((s) => s.addFolder);
+  const activeFolders = useActiveFolderStore((s) => s.folders);
+
+  // Cursor stores chats keyed by a one-way hash of the workspace path, so we
+  // can only surface chats for folders the app already knows about. Feed the
+  // union of pinned/active folders and currently-open terminal cwds. (Ignored
+  // for the other tools, which embed the cwd in their own session files.)
+  const cursorRoots = useMemo(() => {
+    if (tool !== "cursor") return [];
+    const set = new Set<string>();
+    for (const f of activeFolders) if (f.cwd) set.add(f.cwd);
+    for (const t of tabs) {
+      if (t.kind === "terminal" && (t as TerminalTab).cwd)
+        set.add((t as TerminalTab).cwd as string);
+    }
+    return [...set];
+  }, [tool, activeFolders, tabs]);
+
   const {
     projects,
     loading,
@@ -91,7 +109,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     toggleExpand,
     visibleSessions,
     hiddenCount,
-  } = useAiHistory(tool);
+  } = useAiHistory(tool, cursorRoots);
 
   const [opening, setOpening] = useState<string | null>(null);
   const [openingNewCwd, setOpeningNewCwd] = useState<string | null>(null);
@@ -99,7 +117,6 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
   // Module-level store survives sidebar panel switches (component unmounts).
   const { getTabId, setMapping, setTabTitle, clearStaleTabIds } =
     useSessionTabStore();
-  const addFolder = useActiveFolderStore((s) => s.addFolder);
   // Reactive subscription so the effect re-runs if mappings change independently.
   const storeMap = useSessionTabStore((s) => s.map);
 
@@ -170,9 +187,9 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         setActiveId(tabId);
         // No chat title yet (the agent derives it later) — show the tool name
         // so the terminal list reads "Claude Code" instead of just the folder.
-        setTabTitle(tabId, tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : "Codex");
+        setTabTitle(tabId, tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : tool === "cursor" ? "Cursor" : "Codex");
         const leafId = tabId + 1;
-        const command = tool === "claude" ? "claude --permission-mode auto" : tool === "command-code" ? "command-code" : "codex";
+        const command = tool === "claude" ? "claude --permission-mode auto" : tool === "command-code" ? "command-code" : tool === "cursor" ? "cursor-agent" : "codex";
         const sent = await writeWhenReady(leafId, command);
         if (sent && tool === "claude") {
           onClaudeLaunch?.(tabId, leafId);
@@ -181,6 +198,11 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         if (sent && tool === "command-code") {
           onClaudeLaunch?.(tabId, leafId);
           watchForHookMarker(leafId);
+        }
+        // Cursor CLI has no hook system, so no watchForHookMarker — status comes
+        // from the OSC 133 command detector (started/working/exited only).
+        if (sent && tool === "cursor") {
+          onClaudeLaunch?.(tabId, leafId);
         }
         addFolder(cwd, projects.find((p) => p.fullPath === cwd)?.name ?? cwd.split(/[\\/]/).pop() ?? cwd);
       } finally {
@@ -239,6 +261,8 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
             ? `claude --resume ${session.id}`
             : tool === "command-code"
             ? `command-code --resume "${session.title}"`
+            : tool === "cursor"
+            ? `cursor-agent --resume="${session.id}"`
             : `codex --resume ${session.id}`;
         const sent = await writeWhenReady(leafId, command);
         // Only record the mapping / flag the session if the command was actually
@@ -253,6 +277,9 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
             onClaudeLaunch?.(tabId, leafId, session.title);
             watchForHookMarker(leafId);
           }
+          if (tool === "cursor") {
+            onClaudeLaunch?.(tabId, leafId, session.id);
+          }
           setMapping(session.id, tabId, session.title);
           addFolder(session.cwd, projects.find((p) => p.fullPath === session.cwd)?.name ?? session.cwd.split(/[\\/]/).pop() ?? session.cwd);
         }
@@ -263,7 +290,7 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
     [opening, newTab, setActiveId, tabs, tool, getTabId, setMapping, addFolder, projects],
   );
 
-  const label = tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : "Codex";
+  const label = tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : tool === "cursor" ? "Cursor" : "Codex";
 
   return (
     <div className="flex h-full flex-col bg-card/80 backdrop-blur [contain:layout_style]">

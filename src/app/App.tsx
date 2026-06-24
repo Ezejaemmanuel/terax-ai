@@ -31,7 +31,6 @@ import {
   getAllKeys,
   hasAnyKey,
   LocalAgentNotificationsBridge,
-  SelectionAskAi,
   useChatStore,
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
@@ -237,6 +236,7 @@ export default function App() {
   // once and never double-fires into a terminal that's already running Claude.
   const startedClaudeLeavesRef = useRef<Set<number>>(new Set());
   const startedCommandCodeLeavesRef = useRef<Set<number>>(new Set());
+  const startedCursorLeavesRef = useRef<Set<number>>(new Set());
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -577,6 +577,29 @@ export default function App() {
     [],
   );
 
+  const startCursorInLeaf = useCallback(
+    async (
+      cwd: string | undefined,
+      leafId: number,
+      opts?: { knownSessionId?: string; fresh?: boolean },
+    ) => {
+      const sessionId = opts?.fresh ? null : (opts?.knownSessionId ?? null);
+      // Cursor CLI has no hook system — no watchForHookMarker; status comes from
+      // the OSC 133 command detector (started/working/exited only).
+      const cmd = sessionId
+        ? `cursor-agent --resume="${sessionId}"`
+        : "cursor-agent";
+      uiLog(
+        "info",
+        `launching cursor-agent in leaf ${leafId} (${
+          sessionId ? `resume ${sessionId}` : "fresh session"
+        }) cwd=${cwd ?? "?"}`,
+      );
+      await writeCommandToSessionWhenReady(leafId, cmd);
+    },
+    [],
+  );
+
   // Re-link every persisted Claude session id up front so the badge, title, and
   // "jump to running terminal" matching work immediately on restore — this needs
   // no PTY, just the mapping.
@@ -618,6 +641,17 @@ export default function App() {
       knownSessionTitle: t.commandCodeSessionTitle,
     });
   }, [activeTerminalTab, startCommandCodeInLeaf]);
+
+  useEffect(() => {
+    const t = activeTerminalTab;
+    if (!t || !t.cursorSession) return;
+    const leafId = t.activeLeafId;
+    if (startedCursorLeavesRef.current.has(leafId)) return;
+    startedCursorLeavesRef.current.add(leafId);
+    void startCursorInLeaf(t.cwd, leafId, {
+      knownSessionId: t.cursorSessionId,
+    });
+  }, [activeTerminalTab, startCursorInLeaf]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
@@ -931,53 +965,6 @@ export default function App() {
     activeTab,
   ]);
 
-  const [askPopup, setAskPopup] = useState<{ x: number; y: number } | null>(
-    null,
-  );
-
-  useEffect(() => {
-    const isInsideAi = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      if (!el) return false;
-      return !!(
-        el.closest("[data-selection-ask-ai]") ||
-        el.closest("[data-ai-input-bar]") ||
-        el.closest("[data-ai-mini-window]")
-      );
-    };
-
-    const onDown = (e: MouseEvent) => {
-      if (isInsideAi(e.target)) return;
-      setAskPopup(null);
-    };
-    const onUp = (e: MouseEvent) => {
-      if (isInsideAi(e.target)) return;
-      const el = e.target as HTMLElement | null;
-      const inContentArea = el?.closest?.(".xterm, .cm-editor");
-      if (!inContentArea) return;
-      // Defer one tick so xterm/CodeMirror finalize the selection.
-      setTimeout(() => {
-        const text = captureActiveSelection();
-        if (text && text.trim().length > 0) {
-          setAskPopup({ x: e.clientX, y: e.clientY });
-        } else {
-          setAskPopup(null);
-        }
-      }, 0);
-    };
-
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("mouseup", onUp);
-    };
-  }, [captureActiveSelection]);
-
-  const onAskFromSelection = useCallback(() => {
-    askFromSelection();
-    setAskPopup(null);
-  }, [askFromSelection]);
 
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
@@ -1436,6 +1423,20 @@ export default function App() {
     [updateTab],
   );
 
+  // Mark a terminal as a live Cursor CLI session so it survives restart and
+  // resumes via `cursor-agent --resume`. Cursor has no hook system, so there's
+  // no live title/status feed — the chat id is enough for precise resume.
+  const bindCursorTerminal = useCallback(
+    (tabId: number, leafId: number, sessionId?: string) => {
+      startedCursorLeavesRef.current.add(leafId);
+      updateTab(tabId, {
+        cursorSession: true,
+        ...(sessionId ? { cursorSessionId: sessionId } : {}),
+      });
+    },
+    [updateTab],
+  );
+
   // Mark a terminal as a live Claude session. Used by both the agent-hook
   // binding (once the session id is known) and the AI-history launches (at
   // launch time). It:
@@ -1879,6 +1880,39 @@ export default function App() {
                           })
                         }
                       />
+                    ) : sidebarView === "cursor-history" ? (
+                      <AiHistoryPanel
+                        tool="cursor"
+                        newTab={newTab}
+                        setActiveId={setActiveId}
+                        tabs={tabs}
+                        onClaudeLaunch={bindCursorTerminal}
+                        onViewChanges={(session) =>
+                          openAiSessionDiffTab({
+                            sessionId: session.id,
+                            jsonlPath: session.jsonlPath,
+                            cwd: session.cwd,
+                            sessionTitle: session.title,
+                            tool: "cursor",
+                          })
+                        }
+                      />
+                    ) : sidebarView === "codex-history" ? (
+                      <AiHistoryPanel
+                        tool="codex"
+                        newTab={newTab}
+                        setActiveId={setActiveId}
+                        tabs={tabs}
+                        onViewChanges={(session) =>
+                          openAiSessionDiffTab({
+                            sessionId: session.id,
+                            jsonlPath: session.jsonlPath,
+                            cwd: session.cwd,
+                            sessionTitle: session.title,
+                            tool: "codex",
+                          })
+                        }
+                      />
                     ) : null}
                   </div>
                   <SidebarRail
@@ -1997,15 +2031,6 @@ export default function App() {
 
           <AnimatePresence>
             {miniOpen && hasComposer ? <AiMiniWindow key="ai-mini" /> : null}
-            {askPopup ? (
-              <SelectionAskAi
-                key="ask-ai-popup"
-                x={askPopup.x}
-                y={askPopup.y}
-                onAsk={onAskFromSelection}
-                onDismiss={() => setAskPopup(null)}
-              />
-            ) : null}
           </AnimatePresence>
 
           <ShortcutsDialog

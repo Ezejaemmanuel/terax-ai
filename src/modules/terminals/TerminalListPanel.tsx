@@ -306,7 +306,14 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     // terminal show its conversation title before the hook re-links.
     const liveTitle = tabTitles.get(tab.id);
     const persistedTitle = (tab.claudeSessionId || tab.commandCodeSessionTitle) ? tab.title : undefined;
-    const sessionTitle = liveTitle ?? persistedTitle;
+    // Command Code has no hook/title feed (unlike Claude), so a fresh launch has
+    // neither a live nor a persisted title. Fall back to the tab's own agent
+    // title (e.g. "cc · <folder>") or the agent name so the row never silently
+    // degrades to a bare folder name and reads as a Command Code session.
+    const agentFallback = tab.commandCodeSession
+      ? (tab.title || "Command Code")
+      : undefined;
+    const sessionTitle = liveTitle ?? persistedTitle ?? agentFallback;
     const label = sessionTitle ?? cwdBasename(tab.cwd);
     const sublabel = sessionTitle ? cwdBasename(tab.cwd) : null;
     // Visible status acts as a read-receipt: once acknowledged (the terminal was

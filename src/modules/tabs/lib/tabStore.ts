@@ -19,6 +19,10 @@ export type PersistedTab = {
   commandCodeSession?: boolean;
   /** Command Code session title for resume + display. */
   commandCodeSessionTitle?: string;
+  /** Terminal launched as a Cursor CLI session. */
+  cursorSession?: boolean;
+  /** Exact Cursor chat id bound to this terminal, for precise resume. */
+  cursorSessionId?: string;
 };
 
 export type PersistedSession = {

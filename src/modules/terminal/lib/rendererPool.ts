@@ -165,6 +165,16 @@ function createSlot(): Slot {
 
   attachWebgl(slot);
 
+  // Copy-on-select: as soon as a selection finalizes, push it to the clipboard
+  // so highlighting alone copies (no Ctrl+Shift+C, no right-click needed). Fires
+  // as the selection grows; the final value is the full selection. Cleared
+  // selections (no text) are ignored so we never wipe the clipboard.
+  term.onSelectionChange(() => {
+    if (!term.hasSelection()) return;
+    const sel = term.getSelection();
+    if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
+  });
+
   term.attachCustomKeyEventHandler((event) => {
     // During IME composition the browser is assembling a multi-keystroke
     // character (Chinese pinyin → hanzi, Korean jamo → syllable, etc.).

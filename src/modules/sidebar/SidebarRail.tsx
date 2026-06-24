@@ -1,19 +1,23 @@
 import { cn } from "@/lib/utils";
 import {
-  ComputerTerminal02Icon,
+  ChatGptIcon,
+  ClaudeIcon,
   FolderGitTwoIcon,
   FolderTreeIcon,
-  SparklesIcon,
+  SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { SidebarViewId } from "./types";
 
 export const SIDEBAR_RAIL_HEIGHT = 36;
 
+type HugeIcon = Parameters<typeof HugeiconsIcon>[0]["icon"];
+
 type RailItem = {
   id: SidebarViewId;
   label: string;
-  icon: Parameters<typeof HugeiconsIcon>[0]["icon"];
+  /** Either a Hugeicons glyph or `{ brand }` for a bundled brand image (e.g. Cursor). */
+  icon: HugeIcon | { brand: string };
   badge?: number;
 };
 
@@ -32,8 +36,10 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
       icon: FolderGitTwoIcon,
       badge: changedCount,
     },
-    { id: "claude-history", label: "Claude", icon: SparklesIcon },
-    { id: "command-code-history", label: "Command Code", icon: ComputerTerminal02Icon },
+    { id: "claude-history", label: "Claude", icon: ClaudeIcon },
+    { id: "command-code-history", label: "Command Code", icon: SourceCodeIcon },
+    { id: "cursor-history", label: "Cursor", icon: { brand: "/cursor.svg" } },
+    { id: "codex-history", label: "Codex", icon: ChatGptIcon },
   ];
 
   return (
@@ -48,24 +54,39 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
           <button
             key={item.id}
             type="button"
+            title={item.label}
             aria-label={item.label}
             aria-pressed={isActive}
             onClick={() => onSelectView(item.id)}
             className={cn(
-              "group relative flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md text-[11px] font-medium outline-none transition-colors duration-150",
+              // Inactive items shrink to an icon-only square; the active item
+              // grows to also show its text label.
+              "group relative flex cursor-pointer items-center justify-center gap-1.5 rounded-md text-[11px] font-medium outline-none transition-[flex,background-color,color] duration-150",
               "focus-visible:ring-2 focus-visible:ring-primary/40",
+              isActive ? "flex-1 px-2" : "w-8 flex-none",
               isActive
                 ? "bg-foreground/[0.07] text-foreground dark:bg-foreground/[0.09]"
                 : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
             )}
           >
-            <HugeiconsIcon
-              icon={item.icon}
-              size={14}
-              strokeWidth={isActive ? 2 : 1.75}
-              className="shrink-0 transition-[stroke-width] duration-150"
-            />
-            <span>{item.label}</span>
+            {typeof item.icon === "object" && "brand" in item.icon ? (
+              <img
+                src={item.icon.brand}
+                alt=""
+                width={14}
+                height={14}
+                className="shrink-0"
+                style={{ width: 14, height: 14 }}
+              />
+            ) : (
+              <HugeiconsIcon
+                icon={item.icon}
+                size={14}
+                strokeWidth={isActive ? 2 : 1.75}
+                className="shrink-0 transition-[stroke-width] duration-150"
+              />
+            )}
+            {isActive ? <span className="truncate">{item.label}</span> : null}
             {showBadge ? (
               <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border/60 bg-card px-1 text-[9px] font-semibold leading-none tabular-nums text-muted-foreground/95">
                 {item.badge! > 99 ? "99+" : item.badge}

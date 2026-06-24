@@ -85,16 +85,20 @@ pub fn pty_write(state: tauri::State<PtyState>, id: u32, data: String) -> Result
         })?;
     // Bind to a local so the MutexGuard temporary drops before `session` —
     // see rustc note on tail-expression temporary drop order.
-    let result = session
-        .writer
-        .lock()
-        .unwrap()
-        .write_all(data.as_bytes())
-        .map_err(|e| {
-            // EPIPE is expected if the child already exited.
-            log::debug!("pty_write id={id} failed: {e}");
-            e.to_string()
-        });
+    let result = {
+        let mut writer = session.writer.lock().unwrap();
+        // Flush after the write: the underlying ConPTY/pty writer may buffer, and
+        // without an explicit flush the tail of a large paste can sit unwritten
+        // until the next call — the "pasted text is cut off" bug.
+        writer
+            .write_all(data.as_bytes())
+            .and_then(|()| writer.flush())
+            .map_err(|e| {
+                // EPIPE is expected if the child already exited.
+                log::debug!("pty_write id={id} failed: {e}");
+                e.to_string()
+            })
+    };
     result
 }
 
