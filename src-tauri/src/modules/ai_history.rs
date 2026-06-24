@@ -762,7 +762,7 @@ pub async fn ai_history_command_code() -> Vec<AiProject> {
 // separator and a trailing slash, we hash a few normalizations and map each back
 // to the original path, so whichever form Cursor used still resolves.
 fn cursor_root_hashes(root: &str) -> Vec<String> {
-    let trimmed = root.trim_end_matches(|c| c == '/' || c == '\\');
+    let trimmed = root.trim_end_matches(['/', '\\']);
     let mut variants: Vec<String> = vec![
         trimmed.to_string(),
         trimmed.replace('/', "\\"),
