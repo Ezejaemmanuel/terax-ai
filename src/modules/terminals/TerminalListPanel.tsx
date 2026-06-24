@@ -15,8 +15,10 @@ import {
   Copy01Icon,
   Folder01Icon,
   FolderLibraryIcon,
+  FilterIcon,
   PinIcon,
   SparklesIcon,
+  Tick01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useMemo, useRef, useState } from "react";
@@ -26,6 +28,12 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 type Props = {
   tabs: Tab[];
@@ -191,12 +199,20 @@ export const TerminalListPanel = memo(function TerminalListPanel({
     () => tabs.filter((t): t is TerminalTab => t.kind === "terminal"),
     [tabs],
   );
-  const [agentFilter, setAgentFilter] = useState<"all" | "claude" | "command-code">("all");
+  const [agentFilter, setAgentFilter] = useState<"all" | "claude" | "command-code" | "cursor" | "codex">("all");
   const filteredTerminalTabs = useMemo(() => {
     if (agentFilter === "all") return terminalTabs;
-    if (agentFilter === "claude") return terminalTabs.filter(t => t.claudeSession);
-    return terminalTabs.filter(t => t.commandCodeSession);
-  }, [terminalTabs, agentFilter]);
+    return terminalTabs.filter((t) => {
+      if (agentFilter === "claude") return t.claudeSession;
+      if (agentFilter === "command-code") return t.commandCodeSession;
+      if (agentFilter === "cursor") return t.cursorSession;
+      if (agentFilter === "codex") {
+        const a = agentSessions[t.activeLeafId]?.agent?.toLowerCase() ?? "";
+        return a.includes("codex");
+      }
+      return true;
+    });
+  }, [terminalTabs, agentFilter, agentSessions]);
   const canClose = filteredTerminalTabs.length > 1;
 
   // Recompute the activity order only when the tabs or their statuses change —
@@ -383,6 +399,12 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                   size={13}
                   className="mt-0.5 shrink-0"
                 />
+              ) : tab.claudeSession ? (
+                <AgentIcon agent="claude" size={13} className="mt-0.5 shrink-0" />
+              ) : tab.commandCodeSession ? (
+                <AgentIcon agent="command-code" size={13} className="mt-0.5 shrink-0" />
+              ) : tab.cursorSession ? (
+                <AgentIcon agent="cursor" size={13} className="mt-0.5 shrink-0" />
               ) : (
                 <HugeiconsIcon
                   icon={ComputerTerminal02Icon}
@@ -452,17 +474,36 @@ export const TerminalListPanel = memo(function TerminalListPanel({
           Terminals
         </span>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setAgentFilter(f => f === "all" ? "claude" : f === "claude" ? "command-code" : "all")}
-            title={agentFilter === "all" ? "Filter: All terminals" : agentFilter === "claude" ? "Filter: Claude only" : "Filter: Command Code only"}
-            className={cn(
-              "shrink-0 rounded p-0.5 transition-colors hover:bg-accent/60",
-              agentFilter !== "all" ? "text-foreground" : "text-muted-foreground/50",
-            )}
-          >
-            <HugeiconsIcon icon={CommandLineIcon} size={13} strokeWidth={1.75} />
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                title={agentFilter === "all" ? "Filter terminals" : `Filter: ${agentFilter === "command-code" ? "Command Code" : agentFilter.charAt(0).toUpperCase() + agentFilter.slice(1)} only`}
+                className={cn(
+                  "shrink-0 rounded p-0.5 transition-colors hover:bg-accent/60",
+                  agentFilter !== "all" ? "text-foreground" : "text-muted-foreground/50",
+                )}
+              >
+                <HugeiconsIcon icon={FilterIcon} size={13} strokeWidth={1.75} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[140px]">
+              {(["all", "claude", "command-code", "cursor", "codex"] as const).map((opt) => (
+                <DropdownMenuItem
+                  key={opt}
+                  onClick={() => setAgentFilter(opt)}
+                  className="flex items-center gap-2 text-[12px]"
+                >
+                  <span className="flex w-3 items-center justify-center">
+                    {agentFilter === opt && (
+                      <HugeiconsIcon icon={Tick01Icon} size={11} strokeWidth={2} />
+                    )}
+                  </span>
+                  {opt === "all" ? "All terminals" : opt === "claude" ? "Claude Code" : opt === "command-code" ? "Command Code" : opt === "cursor" ? "Cursor" : "Codex"}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <button
             type="button"
             onClick={() => void setTerminalsGroupByFolder(!grouped)}
