@@ -50,6 +50,8 @@ type Props = {
   onLaunchClaudeInFolder?: (cwd: string) => void;
   /** Open a new terminal in a folder group and launch Command Code in it. */
   onLaunchCommandCodeInFolder?: (cwd: string) => void;
+  /** Open a new terminal in a folder group and launch Cursor in it. */
+  onLaunchCursorInFolder?: (cwd: string) => void;
 };
 
 function cwdBasename(cwd?: string): string {
@@ -188,6 +190,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   onNewInFolder,
   onLaunchClaudeInFolder,
   onLaunchCommandCodeInFolder,
+  onLaunchCursorInFolder,
 }: Props) {
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
@@ -554,7 +557,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                     {group.tabs.length}
                   </span>
                   {group.path &&
-                  (onNewInFolder || onLaunchClaudeInFolder || onLaunchCommandCodeInFolder) ? (
+                  (onNewInFolder || onLaunchClaudeInFolder || onLaunchCommandCodeInFolder || onLaunchCursorInFolder) ? (
                     <span className="ml-auto flex shrink-0 items-center gap-0.5">
                       {onLaunchCommandCodeInFolder && (
                         <button
@@ -574,6 +577,16 @@ export const TerminalListPanel = memo(function TerminalListPanel({
                           className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
                         >
                           <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
+                        </button>
+                      )}
+                      {onLaunchCursorInFolder && (
+                        <button
+                          type="button"
+                          title={`Launch Cursor in ${group.label}`}
+                          onClick={() => onLaunchCursorInFolder(group.path!)}
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground group-hover/folder:opacity-100"
+                        >
+                          <img src="/cursor.svg" alt="" className="size-3" />
                         </button>
                       )}
                       {onNewInFolder && (

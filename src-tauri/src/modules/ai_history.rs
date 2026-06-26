@@ -303,6 +303,115 @@ pub async fn claude_session_title(session_id: String) -> Option<String> {
     .flatten()
 }
 
+/// Most-recently-updated Cursor chat id for a workspace.
+/// Cursor stores chats under `~/.cursor/chats/<md5(path)>/<chatId>/meta.json`.
+/// Returns the chat directory name (used with `cursor-agent --resume=<id>`)
+/// or None when the folder has no prior Cursor sessions.
+#[tauri::command]
+pub async fn cursor_latest_session(cwd: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir()?;
+        let chats_dir = home.join(".cursor").join("chats");
+        if !chats_dir.exists() {
+            return None;
+        }
+        let mut best: Option<(u64, String)> = None; // (updated_at_ms, chat_id)
+        for hash in cursor_root_hashes(&cwd) {
+            let hash_dir = chats_dir.join(&hash);
+            if !hash_dir.is_dir() {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&hash_dir) else { continue };
+            for entry in entries.flatten() {
+                let chat_path = entry.path();
+                if !chat_path.is_dir() {
+                    continue;
+                }
+                let Some(chat_id) = chat_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
+                    continue;
+                };
+                let meta_path = chat_path.join("meta.json");
+                let Ok(content) = fs::read_to_string(&meta_path) else { continue };
+                let Ok(meta) = serde_json::from_str::<CursorChatMeta>(&content) else { continue };
+                if !meta.has_conversation {
+                    continue;
+                }
+                let ts = if meta.updated_at_ms > 0 { meta.updated_at_ms } else { meta.created_at_ms };
+                if best.as_ref().map_or(true, |(bt, _)| ts > *bt) {
+                    best = Some((ts, chat_id));
+                }
+            }
+        }
+        let result = best.map(|(_, id)| id);
+        match &result {
+            Some(id) => log::info!("[agent] cursor resume: latest session for cwd={cwd} -> {id}"),
+            None => log::info!("[agent] cursor resume: no prior Cursor session for cwd={cwd}"),
+        }
+        result
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Most-recently-modified Command Code session title for a workspace.
+/// Command Code stores sessions under `~/.commandcode/projects/<encoded_path>/<id>.meta.json`.
+/// Returns the session title (used with `command-code --resume "<title>"`)
+/// or None when the folder has no prior Command Code sessions.
+#[tauri::command]
+pub async fn command_code_latest_session(cwd: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir()?;
+        let projects_dir = home.join(".commandcode").join("projects");
+        if !projects_dir.exists() {
+            return None;
+        }
+        let trimmed = cwd.trim_end_matches(['/', '\\']).to_string();
+        let variants = [
+            trimmed.clone(),
+            trimmed.replace('/', "\\"),
+            trimmed.replace('\\', "/"),
+        ];
+        let mut best: Option<(String, String)> = None; // (mtime_str, title)
+        for variant in &variants {
+            let encoded = encode_path_component(variant);
+            let project_dir = projects_dir.join(&encoded);
+            if !project_dir.is_dir() {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&project_dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                if !fname.ends_with(".meta.json") {
+                    continue;
+                }
+                let id = fname.trim_end_matches(".meta.json").to_string();
+                if id.is_empty() {
+                    continue;
+                }
+                let title = read_commandcode_title(&path).unwrap_or(id);
+                let mtime = file_mtime_ms_str(&path);
+                if best.as_ref().map_or(true, |(bm, _)| mtime > *bm) {
+                    best = Some((mtime, title));
+                }
+            }
+            if best.is_some() {
+                break; // found sessions for this encoding variant
+            }
+        }
+        let result = best.map(|(_, title)| title);
+        match &result {
+            Some(t) => log::info!("[agent] cc resume: latest session for cwd={cwd} -> {t}"),
+            None => log::info!("[agent] cc resume: no prior CommandCode session for cwd={cwd}"),
+        }
+        result
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 // Build a map of session_id → file path by scanning the Codex sessions directory
 // once rather than doing an O(n) walk per session lookup.
 fn build_codex_file_index(sessions_dir: &Path) -> HashMap<String, PathBuf> {

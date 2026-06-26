@@ -149,9 +149,9 @@ function dirname(path: string | null): string | null {
   return normalized.slice(0, idx);
 }
 
-const SIDEBAR_DEFAULT_WIDTH = 260;
-const SIDEBAR_MIN_WIDTH = 220;
-const SIDEBAR_MAX_WIDTH = 480;
+const SIDEBAR_DEFAULT_WIDTH = 234;
+const SIDEBAR_MIN_WIDTH = 198;
+const SIDEBAR_MAX_WIDTH = 432;
 const SIDEBAR_WIDTH_STORAGE_KEY = "terax.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "terax.sidebar.view";
 
@@ -559,9 +559,16 @@ export default function App() {
       leafId: number,
       opts?: { knownSessionTitle?: string; fresh?: boolean },
     ) => {
+      // Mirror claude's fallback: use knownSessionTitle when available, otherwise
+      // look up the most recent Command Code session title for this folder on disk.
       const sessionTitle = opts?.fresh
         ? null
-        : (opts?.knownSessionTitle ?? null);
+        : (opts?.knownSessionTitle ??
+          (cwd
+            ? await invoke<string | null>("command_code_latest_session", { cwd }).catch(
+                () => null,
+              )
+            : null));
       const cmd = sessionTitle
         ? `command-code --resume "${sessionTitle}"`
         : "command-code";
@@ -583,7 +590,16 @@ export default function App() {
       leafId: number,
       opts?: { knownSessionId?: string; fresh?: boolean },
     ) => {
-      const sessionId = opts?.fresh ? null : (opts?.knownSessionId ?? null);
+      // Mirror claude's fallback: use knownSessionId when available, otherwise
+      // look up the most recent Cursor chat for this folder on disk.
+      const sessionId = opts?.fresh
+        ? null
+        : (opts?.knownSessionId ??
+          (cwd
+            ? await invoke<string | null>("cursor_latest_session", { cwd }).catch(
+                () => null,
+              )
+            : null));
       // Cursor CLI has no hook system — no watchForHookMarker; status comes from
       // the OSC 133 command detector (started/working/exited only).
       const cmd = sessionId
@@ -1955,9 +1971,9 @@ export default function App() {
               <ResizableHandle withHandle />
               <ResizablePanel
                 id="terminal-list"
-                defaultSize="180px"
-                minSize="120px"
-                maxSize="300px"
+                defaultSize="220px"
+                minSize="160px"
+                maxSize="360px"
               >
                 <TerminalListPanel
                   tabs={tabs}
@@ -1984,14 +2000,20 @@ export default function App() {
                     void startClaudeInLeaf(cwd, leafId, { fresh: true });
                   }}
                   onLaunchCommandCodeInFolder={(cwd) => {
-                    const base =
-                      cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "shell";
-                    const { tabId, leafId } = newAgentTab(cwd, `cc · ${base}`, {
+                    const { tabId, leafId } = newAgentTab(cwd, "Command Code", {
                       commandCodeSession: true,
                     });
                     setActiveId(tabId);
                     startedCommandCodeLeavesRef.current.add(leafId);
                     void startCommandCodeInLeaf(cwd, leafId, { fresh: true });
+                  }}
+                  onLaunchCursorInFolder={(cwd) => {
+                    const { tabId, leafId } = newAgentTab(cwd, "Cursor", {
+                      cursorSession: true,
+                    });
+                    setActiveId(tabId);
+                    startedCursorLeavesRef.current.add(leafId);
+                    void startCursorInLeaf(cwd, leafId, { fresh: true });
                   }}
                 />
               </ResizablePanel>
