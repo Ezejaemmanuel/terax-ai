@@ -337,7 +337,7 @@ pub async fn cursor_latest_session(cwd: String) -> Option<String> {
                     continue;
                 }
                 let ts = if meta.updated_at_ms > 0 { meta.updated_at_ms } else { meta.created_at_ms };
-                if best.as_ref().map_or(true, |(bt, _)| ts > *bt) {
+                if best.as_ref().is_none_or(|(bt, _)| ts > *bt) {
                     best = Some((ts, chat_id));
                 }
             }
@@ -392,7 +392,7 @@ pub async fn command_code_latest_session(cwd: String) -> Option<String> {
                 }
                 let title = read_commandcode_title(&path).unwrap_or(id);
                 let mtime = file_mtime_ms_str(&path);
-                if best.as_ref().map_or(true, |(bm, _)| mtime > *bm) {
+                if best.as_ref().is_none_or(|(bm, _)| mtime > *bm) {
                     best = Some((mtime, title));
                 }
             }
