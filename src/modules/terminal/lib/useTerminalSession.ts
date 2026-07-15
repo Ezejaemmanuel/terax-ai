@@ -113,21 +113,6 @@ export function writeToSession(leafId: number, data: string): boolean {
   return true;
 }
 
-// Max bytes per pty_write when pasting. ConPTY's input pipe drops bytes from an
-// oversized single write if the child isn't reading fast enough; staying well
-// under that and awaiting each chunk keeps long pastes intact and ordered.
-const PASTE_CHUNK = 1024;
-
-async function writePtyChunked(pty: PtySession, payload: string): Promise<void> {
-  if (payload.length <= PASTE_CHUNK) {
-    await pty.write(payload);
-    return;
-  }
-  for (let i = 0; i < payload.length; i += PASTE_CHUNK) {
-    await pty.write(payload.slice(i, i + PASTE_CHUNK));
-  }
-}
-
 export async function writeCommandToSessionWhenReady(
   leafId: number,
   command: string,
@@ -181,11 +166,16 @@ configureRendererPool({
         const pty = s.pty;
         // Mirror xterm's own paste normalization: collapse CRLF/CR/LF to a
         // single CR (what Enter sends), then bracket only when the app asked
-        // for it. We use the session-tracked flag rather than slot.term's mode
-        // so it stays correct across the slot reset()/steal on terminal switch.
+        // for it. Prefer xterm's parser-tracked mode (a proper state machine
+        // that survives sequences split across PTY reads) and fall back to the
+        // session flag; the session flag alone missed ESC[?2004h on a read
+        // boundary and sent multi-line pastes unbracketed (line-by-line Enter).
+        const bracketed =
+          getSlotForLeaf(leafId)?.term.modes.bracketedPasteMode ??
+          s.bracketedPaste;
         const body = text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
         let payload: string;
-        if (s.bracketedPaste) {
+        if (bracketed) {
           // Defang any embedded ESC so pasted content can't smuggle its own
           // control sequences (incl. a forged ESC[201~ paste terminator).
           const safe = body.replace(/\x1b/g, "␛");
@@ -193,11 +183,9 @@ configureRendererPool({
         } else {
           payload = body;
         }
-        // Write in bounded chunks, awaiting each: a single large write to the
-        // ConPTY input pipe can drop bytes when the child isn't draining fast
-        // enough (the "paste is truncated" bug). Sequential awaits also keep the
-        // chunks ordered (concurrent pty_write invokes could otherwise interleave).
-        void writePtyChunked(pty, payload);
+        // pty.write chunks + orders large payloads internally, so a single call
+        // is safe against the ConPTY oversized-write drop (the truncation bug).
+        void pty.write(payload);
       },
       resizePty: (cols, rows) => {
         s.cols = cols;
