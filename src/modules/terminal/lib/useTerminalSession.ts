@@ -165,14 +165,15 @@ configureRendererPool({
         if (!s.pty) return;
         const pty = s.pty;
         // Mirror xterm's own paste normalization: collapse CRLF/CR/LF to a
-        // single CR (what Enter sends), then bracket only when the app asked
-        // for it. Prefer xterm's parser-tracked mode (a proper state machine
-        // that survives sequences split across PTY reads) and fall back to the
-        // session flag; the session flag alone missed ESC[?2004h on a read
-        // boundary and sent multi-line pastes unbracketed (line-by-line Enter).
+        // single CR (what Enter sends), then bracket when the app asked for it.
+        // Bracket if EITHER tracker says so: the session flag (scanned from PTY
+        // output, survives the slot reset/steal on tab switch) OR xterm's
+        // parser-tracked mode. Missing the wrap is what makes Claude Code treat
+        // every pasted newline as Enter and truncate with no [Pasted +N lines];
+        // relying on a single tracker left a hole that either one closes.
         const bracketed =
-          getSlotForLeaf(leafId)?.term.modes.bracketedPasteMode ??
-          s.bracketedPaste;
+          s.bracketedPaste ||
+          (getSlotForLeaf(leafId)?.term.modes.bracketedPasteMode ?? false);
         const body = text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
         let payload: string;
         if (bracketed) {
@@ -183,8 +184,9 @@ configureRendererPool({
         } else {
           payload = body;
         }
-        // pty.write chunks + orders large payloads internally, so a single call
-        // is safe against the ConPTY oversized-write drop (the truncation bug).
+        // Single contiguous write: the blocking Rust writer delivers it whole,
+        // and keeping it unfragmented is what lets the child reassemble the
+        // bracketed paste.
         void pty.write(payload);
       },
       resizePty: (cols, rows) => {

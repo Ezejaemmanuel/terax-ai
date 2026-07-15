@@ -175,6 +175,29 @@ function createSlot(): Slot {
     if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
   });
 
+  // Intercept every paste (right-click menu, Ctrl+V, Shift+Insert) at the capture
+  // phase, before xterm's own textarea paste handler runs, and route it through
+  // the session. xterm's native paste bracketed only on its own reset-prone
+  // bracketedPasteMode, so right-click pastes into a Claude Code whose mode had
+  // been wiped arrived unwrapped and got truncated (newlines read as Enter, no
+  // [Pasted +N lines]). The session path brackets on the app-tracked state and
+  // writes the payload contiguously. stopPropagation in capture keeps the event
+  // from reaching the textarea, so xterm never double-pastes.
+  host.addEventListener(
+    "paste",
+    (event: ClipboardEvent) => {
+      const leafId = slot.currentLeafId;
+      if (leafId === null) return;
+      const bridge = adapter?.resolveLeaf(leafId);
+      if (!bridge) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text) bridge.pasteText(text);
+    },
+    true,
+  );
+
   term.attachCustomKeyEventHandler((event) => {
     // During IME composition the browser is assembling a multi-keystroke
     // character (Chinese pinyin → hanzi, Korean jamo → syllable, etc.).

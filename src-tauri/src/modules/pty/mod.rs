@@ -87,19 +87,23 @@ pub fn pty_write(state: tauri::State<PtyState>, id: u32, data: String) -> Result
     // see rustc note on tail-expression temporary drop order.
     let result = {
         let mut writer = session.writer.lock().unwrap();
-        // Flush after the write: the underlying ConPTY/pty writer may buffer, and
-        // without an explicit flush the tail of a large paste can sit unwritten
-        // until the next call — the "pasted text is cut off" bug.
-        writer
-            .write_all(data.as_bytes())
-            .and_then(|()| writer.flush())
-            .map_err(|e| {
-                // EPIPE is expected if the child already exited.
-                log::debug!("pty_write id={id} failed: {e}");
-                e.to_string()
-            })
+        write_input(&mut *writer, data.as_bytes()).map_err(|e| {
+            // EPIPE is expected if the child already exited.
+            log::debug!("pty_write id={id} failed: {e}");
+            e.to_string()
+        })
     };
     result
+}
+
+// Deliver a whole input payload to the pty in one shot. write_all loops over the
+// writer until every byte is accepted, so a partial write (the underlying pipe
+// taking fewer bytes than offered) never silently drops the tail — this is the
+// bug class that truncates large pastes on ConPTY. The trailing flush pushes any
+// buffered tail through instead of letting it sit until the next keystroke.
+fn write_input<W: Write>(writer: &mut W, data: &[u8]) -> std::io::Result<()> {
+    writer.write_all(data)?;
+    writer.flush()
 }
 
 #[tauri::command]
@@ -187,4 +191,98 @@ pub fn pty_close_all(state: tauri::State<PtyState>) -> Result<usize, String> {
         log::info!("pty_close_all: reaped {count} orphaned session(s)");
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_input;
+    use std::io::{self, Write};
+
+    // A writer that accepts at most `limit` bytes per write() call and counts
+    // flushes — models a pipe that takes partial writes, the exact condition
+    // under which a naive single write() would drop the tail of a large paste.
+    struct ShortWriter {
+        buf: Vec<u8>,
+        limit: usize,
+        flushes: usize,
+    }
+
+    impl ShortWriter {
+        fn new(limit: usize) -> Self {
+            Self {
+                buf: Vec::new(),
+                limit,
+                flushes: 0,
+            }
+        }
+    }
+
+    impl Write for ShortWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            let n = data.len().min(self.limit);
+            self.buf.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writes_small_payload_whole() {
+        let mut w = ShortWriter::new(4096);
+        write_input(&mut w, b"echo hi\r").unwrap();
+        assert_eq!(w.buf, b"echo hi\r");
+        assert_eq!(w.flushes, 1);
+    }
+
+    #[test]
+    fn does_not_truncate_when_writer_takes_partial_writes() {
+        // 1-byte-per-call is the worst case: proves write_all loops to completion
+        // and nothing is dropped, regardless of how little the pipe accepts.
+        let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        let mut w = ShortWriter::new(1);
+        write_input(&mut w, &payload).unwrap();
+        assert_eq!(w.buf.len(), payload.len());
+        assert_eq!(w.buf, payload);
+    }
+
+    #[test]
+    fn keeps_bracketed_paste_markers_intact_across_partial_writes() {
+        // A realistic large multi-line paste: the child must see the ESC[200~
+        // start and ESC[201~ end with every CR-separated line between them, byte
+        // for byte, even though the writer only accepts 1018 bytes per call
+        // (the ConPTY threshold reported in the wild).
+        let body = "some source code line\r".repeat(500);
+        let payload = format!("\x1b[200~{body}\x1b[201~");
+        let mut w = ShortWriter::new(1018);
+        write_input(&mut w, payload.as_bytes()).unwrap();
+        assert_eq!(w.buf, payload.as_bytes());
+        assert!(w.buf.starts_with(b"\x1b[200~"));
+        assert!(w.buf.ends_with(b"\x1b[201~"));
+    }
+
+    #[test]
+    fn empty_payload_still_flushes() {
+        let mut w = ShortWriter::new(64);
+        write_input(&mut w, b"").unwrap();
+        assert!(w.buf.is_empty());
+        assert_eq!(w.flushes, 1);
+    }
+
+    #[test]
+    fn propagates_writer_errors() {
+        struct FailWriter;
+        impl Write for FailWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "child exited"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let err = write_input(&mut FailWriter, b"data").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
 }

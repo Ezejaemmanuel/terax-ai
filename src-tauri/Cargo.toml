@@ -1,6 +1,6 @@
 [package]
 name = "terax"
-version = "0.7.28-jatique-65"
+version = "0.7.28-jatique-66"
 description = "Terax â€” an open-source AI-native terminal emulator"
 authors = ["crynta"]
 license = "Apache-2.0"
