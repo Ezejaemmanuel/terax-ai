@@ -1,4 +1,5 @@
 import { getLaunchDir } from "@/lib/launchDir";
+import { useAgentStore } from "@/modules/agents/store/agentStore";
 import { leafIds } from "@/modules/terminal/lib/panes";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -8,10 +9,10 @@ import type { Tab } from "./useTabs";
 
 const PERIODIC_SAVE_MS = 20_000;
 
-function serializeTab(t: Tab): PersistedTab | null {
+function serializeTab(t: Tab, activityAt?: number): PersistedTab | null {
   switch (t.kind) {
     case "terminal":
-      return { kind: "terminal", id: t.id, title: t.title, cwd: t.cwd, pinned: t.pinned, color: t.color, claudeSession: t.claudeSession, claudeSessionId: t.claudeSessionId, commandCodeSession: t.commandCodeSession, commandCodeSessionTitle: t.commandCodeSessionTitle, cursorSession: t.cursorSession, cursorSessionId: t.cursorSessionId };
+      return { kind: "terminal", id: t.id, title: t.title, cwd: t.cwd, pinned: t.pinned, color: t.color, claudeSession: t.claudeSession, claudeSessionId: t.claudeSessionId, commandCodeSession: t.commandCodeSession, commandCodeSessionTitle: t.commandCodeSessionTitle, cursorSession: t.cursorSession, cursorSessionId: t.cursorSessionId, activityAt };
     case "editor":
       return { kind: "editor", id: t.id, title: t.title, path: t.path, pinned: t.pinned, color: t.color };
     case "preview":
@@ -121,6 +122,12 @@ export function useTabSession(
       ).then((results) => {
         const valid = results.filter(Boolean) as Tab[];
         if (!valid.length) return;
+        // Restore the most-recently-messaged-first order of the terminal list.
+        const order: Record<number, number> = {};
+        for (const p of saved.tabs) {
+          if (p.activityAt) order[p.id] = p.activityAt;
+        }
+        useAgentStore.getState().seedActivityOrder(order);
         const restoredActiveId =
           valid.find((t) => t.id === saved.activeId)?.id ?? valid[0].id;
         // Compute the correct nextIdRef: above all tab IDs and all leaf IDs
@@ -161,8 +168,11 @@ export function useTabSession(
   // The timeout ensures the close handler never hangs the window indefinitely
   // if the Tauri IPC stalls (disk full, backend busy, etc.).
   const flushSave = () => {
+    // Read the activity order imperatively: it changes on every agent event and
+    // must not re-trigger the save effect (which keys off tabs/activeId only).
+    const activityOrder = useAgentStore.getState().activityOrder;
     const serializable = latestTabs.current
-      .map(serializeTab)
+      .map((t) => serializeTab(t, activityOrder[t.id]))
       .filter(Boolean) as PersistedTab[];
     const save = saveTabSession({ tabs: serializable, activeId: latestActiveId.current });
     const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));

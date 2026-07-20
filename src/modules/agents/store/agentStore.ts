@@ -12,10 +12,19 @@ let notifSeq = 0;
 
 type AgentStoreState = {
   sessions: Record<number, AgentSession>;
+  /** Per-tab "last time this chat did something", keyed by tabId and kept after
+   * the session is gone. The terminal list sorts on this so a chat you just
+   * messaged moves to the top and STAYS there once the run ends — unlike the
+   * session record, which `finish` deletes. */
+  activityOrder: Record<number, number>;
   localAgent: LocalAgentState;
   notifications: AgentNotification[];
   start: (leafId: number, tabId: number, agent: string) => void;
   setStatus: (leafId: number, status: AgentStatus) => void;
+  /** Restore the persisted per-tab activity order on startup. Merges rather
+   * than replaces, so an agent that already reported in during boot keeps its
+   * newer timestamp. */
+  seedActivityOrder: (order: Record<number, number>) => void;
   /** Mark the current status as seen, so the row stops showing a dot until the
    * next status event. No-op if there's no session or it's already acknowledged. */
   acknowledge: (leafId: number) => void;
@@ -31,6 +40,7 @@ type AgentStoreState = {
 
 export const useAgentStore = create<AgentStoreState>((set) => ({
   sessions: {},
+  activityOrder: {},
   localAgent: null,
   notifications: [],
 
@@ -38,6 +48,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     set((s) => {
       const now = Date.now();
       return {
+        activityOrder: { ...s.activityOrder, [tabId]: now },
         sessions: {
           ...s.sessions,
           [leafId]: {
@@ -63,6 +74,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       if (!prev) return s;
       const now = Date.now();
       return {
+        activityOrder: { ...s.activityOrder, [prev.tabId]: now },
         sessions: {
           ...s.sessions,
           [leafId]: {
@@ -75,6 +87,16 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
           },
         },
       };
+    }),
+
+  seedActivityOrder: (order) =>
+    set((s) => {
+      const next = { ...s.activityOrder };
+      for (const [tabId, at] of Object.entries(order)) {
+        const id = Number(tabId);
+        if (!(next[id] > at)) next[id] = at;
+      }
+      return { activityOrder: next };
     }),
 
   acknowledge: (leafId) =>

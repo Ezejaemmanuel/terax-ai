@@ -113,17 +113,19 @@ const STATUS_META: Record<
   completed: { dot: "bg-emerald-500", border: "border-emerald-500/70", title: "Completed", pulse: false },
 };
 
-// Display-only ordering: a currently-running Claude session bubbles to the top
-// of its scope, most-recently-active first, so the chat you just messaged sits
-// up top. Pinned terminals stay above everything; idle/completed ones hold
-// their place. Never mutates the persisted drag-order — only sorts what renders.
+// Display-only ordering: the chat you most recently messaged sits at the top of
+// its scope and STAYS there once the run ends — we sort on `activityOrder`
+// (kept per-tab after the session is finished/deleted), not on the live status,
+// so a row can't snap back to its old slot the moment the agent goes idle.
+// Pinned terminals stay above everything; terminals that never ran an agent
+// hold their persisted drag-order below. Never mutates that persisted order.
 function orderByActivity(
   list: TerminalTab[],
-  sessions: Record<number, AgentSession>,
+  activityOrder: Record<number, number>,
 ): TerminalTab[] {
   const rank = (t: TerminalTab) => {
     if (t.pinned) return 0;
-    return sessions[t.activeLeafId]?.status === "working" ? 1 : 2;
+    return activityOrder[t.id] ? 1 : 2;
   };
   return list
     .map((t, i) => ({ t, i }))
@@ -132,8 +134,8 @@ function orderByActivity(
       const rb = rank(b.t);
       if (ra !== rb) return ra - rb;
       if (ra === 1) {
-        const la = sessions[a.t.activeLeafId]?.lastActivityAt ?? 0;
-        const lb = sessions[b.t.activeLeafId]?.lastActivityAt ?? 0;
+        const la = activityOrder[a.t.id] ?? 0;
+        const lb = activityOrder[b.t.id] ?? 0;
         if (la !== lb) return lb - la;
       }
       return a.i - b.i; // stable: preserve persisted order within a rank
@@ -146,17 +148,17 @@ function orderByActivity(
 // activity of any terminal in it.
 function groupActivityKey(
   groupTabs: TerminalTab[],
-  sessions: Record<number, AgentSession>,
-): { running: boolean; recency: number } {
-  let running = false;
+  activityOrder: Record<number, number>,
+): { active: boolean; recency: number } {
+  let active = false;
   let recency = 0;
   for (const t of groupTabs) {
-    const s = sessions[t.activeLeafId];
-    if (!s) continue;
-    if (s.status === "working") running = true;
-    if (s.lastActivityAt > recency) recency = s.lastActivityAt;
+    const at = activityOrder[t.id];
+    if (!at) continue;
+    active = true;
+    if (at > recency) recency = at;
   }
-  return { running, recency };
+  return { active, recency };
 }
 
 // Reorder `list` to the frozen positions captured by `keyOf` (so rows/groups
@@ -195,6 +197,7 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   const agentSessions = useAgentStore(
     (s: { sessions: Record<number, AgentSession> }) => s.sessions,
   );
+  const activityOrder = useAgentStore((s) => s.activityOrder);
   const tabTitles = useSessionTabStore((s) => s.tabTitles);
   const grouped = usePreferencesStore((s) => s.terminalsGroupByFolder);
 
@@ -221,27 +224,27 @@ export const TerminalListPanel = memo(function TerminalListPanel({
   // Recompute the activity order only when the tabs or their statuses change —
   // not on every unrelated re-render (drag indicator, title polling).
   const orderedFlat = useMemo(
-    () => orderByActivity(filteredTerminalTabs, agentSessions),
-    [filteredTerminalTabs, agentSessions],
+    () => orderByActivity(filteredTerminalTabs, activityOrder),
+    [filteredTerminalTabs, activityOrder],
   );
   const orderedGroups = useMemo(() => {
     const groups = groupByFolder(filteredTerminalTabs).map((group) => ({
       group,
-      tabs: orderByActivity(group.tabs, agentSessions),
+      tabs: orderByActivity(group.tabs, activityOrder),
     }));
-    // Bubble whole folder groups by activity too: a group with a running
-    // session first, then most-recently-active, else first-seen order.
+    // Bubble whole folder groups by activity too: a group holding a messaged
+    // chat first, then most-recently-active, else first-seen order.
     return groups
       .map((g, i) => ({ g, i }))
       .sort((a, b) => {
-        const ka = groupActivityKey(a.g.group.tabs, agentSessions);
-        const kb = groupActivityKey(b.g.group.tabs, agentSessions);
-        if (ka.running !== kb.running) return ka.running ? -1 : 1;
+        const ka = groupActivityKey(a.g.group.tabs, activityOrder);
+        const kb = groupActivityKey(b.g.group.tabs, activityOrder);
+        if (ka.active !== kb.active) return ka.active ? -1 : 1;
         if (ka.recency !== kb.recency) return kb.recency - ka.recency;
         return a.i - b.i;
       })
       .map((x) => x.g);
-  }, [filteredTerminalTabs, agentSessions]);
+  }, [filteredTerminalTabs, activityOrder]);
 
   // While the pointer is over the list, freeze only the ORDER (of both groups
   // and the terminals inside them) so a row can't shift out from under the

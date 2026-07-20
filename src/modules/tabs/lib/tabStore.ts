@@ -23,6 +23,10 @@ export type PersistedTab = {
   cursorSession?: boolean;
   /** Exact Cursor chat id bound to this terminal, for precise resume. */
   cursorSessionId?: string;
+  /** When this terminal's agent last did something. Drives the terminal list's
+   * most-recently-messaged-first order; persisted so that order survives a
+   * restart instead of falling back to raw drag-order. */
+  activityAt?: number;
 };
 
 export type PersistedSession = {
