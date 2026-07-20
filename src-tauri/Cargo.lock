@@ -5925,7 +5925,7 @@ dependencies = [
 
 [[package]]
 name = "terax"
-version = "0.7.28-jatique-67"
+version = "0.7.28-jatique-68"
 dependencies = [
  "bytes",
  "dirs 5.0.1",

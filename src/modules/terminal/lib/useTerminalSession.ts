@@ -69,6 +69,12 @@ type Session = {
   // clipboard content for a switched-to TUI (Claude Code, REPLs). See
   // deliverPtyBytes and the pasteText bridge method.
   bracketedPaste: boolean;
+  // How many bytes of BRACKETED_PASTE_PREFIX matched at the tail of the previous
+  // PTY read. Carries the scanner across read boundaries: a TUI that toggles
+  // 2004 mid-redraw emits the sequence inside a large burst that the pty splits
+  // at an arbitrary byte, and a scanner that restarts per chunk silently misses
+  // it. See scanBracketedPaste.
+  bracketedScanMatched: number;
 };
 
 const sessions = new Map<number, Session>();
@@ -250,6 +256,7 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     altScreenAtRelease: false,
     modesAtRelease: null,
     bracketedPaste: false,
+    bracketedScanMatched: 0,
   };
   sessions.set(leafId, session);
 
@@ -272,36 +279,53 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
 // final byte ('h' enable / 'l' disable).
 const BRACKETED_PASTE_PREFIX = [0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x30, 0x34];
 
-// Track the application's bracketed-paste state from its own output. Scans for
-// ESC[?2004h / ESC[?2004l; last match in the chunk wins. Cheap: the inner loop
-// only engages at an ESC byte. A marker split across two PTY reads is missed,
-// but apps emit it as one write at startup so this is correct in practice.
-function scanBracketedPaste(bytes: Uint8Array, current: boolean): boolean {
-  let state = current;
-  // Last index where prefix (7 bytes) + final byte (1) still fit.
-  const last = bytes.length - BRACKETED_PASTE_PREFIX.length - 1;
-  for (let i = 0; i <= last; i++) {
-    if (bytes[i] !== 0x1b) continue;
-    let match = true;
-    for (let j = 1; j < BRACKETED_PASTE_PREFIX.length; j++) {
-      if (bytes[i + j] !== BRACKETED_PASTE_PREFIX[j]) {
-        match = false;
-        break;
-      }
+export type BracketedScan = { state: boolean; matched: number };
+
+// Track the application's bracketed-paste state from its own output by scanning
+// for ESC[?2004h / ESC[?2004l; the last match wins.
+//
+// This is a resumable byte matcher, not a per-chunk search. `matched` carries
+// how much of the prefix was pending at the end of the previous read, so a
+// sequence straddling a pty read boundary is still recognised. That matters:
+// a TUI (Claude Code) toggles 2004 repeatedly while redrawing, buried in large
+// output bursts that the pty splits at arbitrary offsets. A per-chunk scanner
+// misses those, and a single missed re-enable latches the state at false for
+// the rest of the session, so every later paste is sent unbracketed and the
+// receiving app reads each pasted newline as Enter.
+export function scanBracketedPaste(
+  bytes: Uint8Array,
+  current: BracketedScan,
+): BracketedScan {
+  let { state, matched } = current;
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    if (matched === BRACKETED_PASTE_PREFIX.length) {
+      // Prefix complete; this byte is the final 'h' (set) or 'l' (reset).
+      if (b === 0x68) state = true;
+      else if (b === 0x6c) state = false;
+      matched = 0;
+      continue;
     }
-    if (!match) continue;
-    const final = bytes[i + BRACKETED_PASTE_PREFIX.length];
-    if (final === 0x68) state = true; // 'h'
-    else if (final === 0x6c) state = false; // 'l'
-    i += BRACKETED_PASTE_PREFIX.length;
+    if (b === BRACKETED_PASTE_PREFIX[matched]) {
+      matched++;
+      continue;
+    }
+    // Mismatch: this byte may itself start a fresh sequence. Only ESC can, and
+    // the prefix has no interior ESC, so no backtracking beyond this is needed.
+    matched = b === 0x1b ? 1 : 0;
   }
-  return state;
+  return { state, matched };
 }
 
 function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
   const s = sessions.get(leafId);
   if (!s) return;
-  s.bracketedPaste = scanBracketedPaste(bytes, s.bracketedPaste);
+  const scan = scanBracketedPaste(bytes, {
+    state: s.bracketedPaste,
+    matched: s.bracketedScanMatched,
+  });
+  s.bracketedPaste = scan.state;
+  s.bracketedScanMatched = scan.matched;
   if (!s.gotFirstByte) {
     s.gotFirstByte = true;
     console.debug(
@@ -512,6 +536,7 @@ export async function respawnSession(
   // crashed Claude Code's bracketed paste) leak into it on the next bind.
   s.modesAtRelease = null;
   s.bracketedPaste = false;
+  s.bracketedScanMatched = 0;
   s.dormantRing = new DormantRing(
     dormantByteCapForScrollback(usePreferencesStore.getState().terminalScrollback),
   );

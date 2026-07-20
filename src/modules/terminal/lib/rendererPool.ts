@@ -198,6 +198,46 @@ function createSlot(): Slot {
     true,
   );
 
+  // WebView2's own right-click > Paste does not raise a ClipboardEvent on the
+  // textarea; it arrives as beforeinput/insertFromPaste and is then applied as
+  // ordinary text input. That misses the handler above *and* xterm's paste()
+  // path, so the clipboard reached the pty unbracketed and dribbled in as many
+  // small input events (measured: 6KB as 106 chunks over 7.6s) — every embedded
+  // newline read as Enter, which is the truncated-paste bug. Catch that input
+  // type too and route it through the same single contiguous bracketed write.
+  host.addEventListener(
+    "beforeinput",
+    (event: InputEvent) => {
+      if (
+        event.inputType !== "insertFromPaste" &&
+        event.inputType !== "insertFromPasteAsQuotation"
+      ) {
+        return;
+      }
+      const leafId = slot.currentLeafId;
+      if (leafId === null) return;
+      const bridge = adapter?.resolveLeaf(leafId);
+      if (!bridge) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // dataTransfer is populated for paste-type beforeinput in Chromium; fall
+      // back to the async clipboard read when it is empty.
+      const direct =
+        event.dataTransfer?.getData("text/plain") || event.data || "";
+      if (direct) {
+        bridge.pasteText(direct);
+        return;
+      }
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) bridge.pasteText(text);
+        })
+        .catch(() => {});
+    },
+    true,
+  );
+
   term.attachCustomKeyEventHandler((event) => {
     // During IME composition the browser is assembling a multi-keystroke
     // character (Chinese pinyin → hanzi, Korean jamo → syllable, etc.).
