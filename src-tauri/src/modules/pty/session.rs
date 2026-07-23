@@ -8,12 +8,29 @@ use portable_pty::{native_pty_system, ChildKiller, MasterPty, PtySize};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter};
 
-use super::agent_detect::AgentDetector;
+use super::agent_detect::{AgentDetector, AgentSignal};
 use super::da_filter::DaFilter;
 use super::shell_init;
+use crate::modules::broadcast::bus;
 use crate::modules::workspace::WorkspaceEnv;
 
 const AGENT_EVENT: &str = "terax:agent-signal";
+
+/// Tee agent transitions onto the broadcast bus. The atomic check keeps this at
+/// a single relaxed load on the PTY reader's path when broadcasting is off, so
+/// the feature costs nothing until it is turned on.
+#[inline]
+fn broadcast_signal(sig: &AgentSignal) {
+    if !bus::is_enabled() {
+        return;
+    }
+    bus::publish(bus::Event::AgentStatus {
+        pty_id: sig.id,
+        kind: sig.kind.to_string(),
+        agent: sig.agent.clone(),
+        session: sig.session.clone(),
+    });
+}
 
 // Flusher coalesces a short window after first-byte arrival so we send chunks,
 // not single bytes. MAX_IDLE is only a safety net for missed signals.
@@ -290,6 +307,7 @@ pub fn spawn(
                         agent_detect.process(&buf[..n], |t| {
                             let sig = t.into_signal(id);
                             log::info!("[agent] emit id={id} kind={}", sig.kind);
+                            broadcast_signal(&sig);
                             let _ = app_reader.emit(AGENT_EVENT, sig);
                         });
                         filtered.clear();
@@ -318,7 +336,9 @@ pub fn spawn(
                 }
             }
             agent_detect.finish(|t| {
-                let _ = app_reader.emit(AGENT_EVENT, t.into_signal(id));
+                let sig = t.into_signal(id);
+                broadcast_signal(&sig);
+                let _ = app_reader.emit(AGENT_EVENT, sig);
             });
             pending_r.1.notify_one();
             if dropped_bytes > 0 {

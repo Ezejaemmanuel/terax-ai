@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { AgentNotificationsBridge } from "@/modules/agents";
 import { useSessionTabStore } from "@/modules/ai-history/lib/sessionTabStore";
+import { useBroadcastAutoStart } from "@/modules/broadcast/useBroadcastAutoStart";
 import { firePendingReviewForSession } from "@/modules/agents/lib/review";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
 import { watchForHookMarker } from "@/modules/agents/lib/hookWatchdog";
@@ -190,6 +191,7 @@ function readSidebarView(): SidebarViewId {
 const GIT_REFRESH_DEBOUNCE_MS = 400;
 
 export default function App() {
+  useBroadcastAutoStart();
   const {
     tabs,
     activeId,

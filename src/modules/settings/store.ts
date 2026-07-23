@@ -91,6 +91,11 @@ export type Preferences = {
   shortcuts: Record<ShortcutId, KeyBinding[]>;
   editorAutoSave: boolean;
   editorAutoSaveDelay: number;
+  broadcastAutoStart: boolean;
+  broadcastPort: number;
+  broadcastNtfyEnabled: boolean;
+  broadcastNtfyServer: string;
+  broadcastNtfyTopic: string;
 };
 
 const STORE_PATH = "terax-settings.json";
@@ -136,6 +141,20 @@ const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_EDITOR_AUTO_SAVE = "editorAutoSave";
 const KEY_EDITOR_AUTO_SAVE_DELAY = "editorAutoSaveDelay";
+const KEY_BROADCAST_AUTO_START = "broadcastAutoStart";
+const KEY_BROADCAST_PORT = "broadcastPort";
+const KEY_BROADCAST_NTFY_ENABLED = "broadcastNtfyEnabled";
+const KEY_BROADCAST_NTFY_SERVER = "broadcastNtfyServer";
+const KEY_BROADCAST_NTFY_TOPIC = "broadcastNtfyTopic";
+
+export const BROADCAST_PORT_DEFAULT = 7331;
+export const BROADCAST_NTFY_SERVER_DEFAULT = "https://ntfy.sh";
+
+/** Ports below 1024 need privileges the app does not have. */
+function clampPort(value: number): number {
+  if (!Number.isFinite(value)) return BROADCAST_PORT_DEFAULT;
+  return Math.min(65535, Math.max(1024, Math.round(value)));
+}
 
 export const TERMINAL_FONT_SIZE_DEFAULT = 14;
 export const TERMINAL_FONT_SIZE_MIN = 8;
@@ -194,6 +213,11 @@ export const DEFAULT_PREFERENCES: Preferences = {
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   editorAutoSave: false,
   editorAutoSaveDelay: 1000,
+  broadcastAutoStart: false,
+  broadcastPort: BROADCAST_PORT_DEFAULT,
+  broadcastNtfyEnabled: false,
+  broadcastNtfyServer: BROADCAST_NTFY_SERVER_DEFAULT,
+  broadcastNtfyTopic: "",
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -329,6 +353,21 @@ export async function loadPreferences(): Promise<Preferences> {
       get<number>(KEY_EDITOR_AUTO_SAVE_DELAY) ??
         DEFAULT_PREFERENCES.editorAutoSaveDelay,
     ),
+    broadcastAutoStart:
+      get<boolean>(KEY_BROADCAST_AUTO_START) ??
+      DEFAULT_PREFERENCES.broadcastAutoStart,
+    broadcastPort: clampPort(
+      get<number>(KEY_BROADCAST_PORT) ?? DEFAULT_PREFERENCES.broadcastPort,
+    ),
+    broadcastNtfyEnabled:
+      get<boolean>(KEY_BROADCAST_NTFY_ENABLED) ??
+      DEFAULT_PREFERENCES.broadcastNtfyEnabled,
+    broadcastNtfyServer:
+      get<string>(KEY_BROADCAST_NTFY_SERVER) ??
+      DEFAULT_PREFERENCES.broadcastNtfyServer,
+    broadcastNtfyTopic:
+      get<string>(KEY_BROADCAST_NTFY_TOPIC) ??
+      DEFAULT_PREFERENCES.broadcastNtfyTopic,
   };
 }
 
@@ -534,6 +573,26 @@ export async function setAgentNotifications(value: boolean): Promise<void> {
   await writePref(KEY_AGENT_NOTIFICATIONS, value);
 }
 
+export async function setBroadcastAutoStart(value: boolean): Promise<void> {
+  await writePref(KEY_BROADCAST_AUTO_START, value);
+}
+
+export async function setBroadcastPort(value: number): Promise<void> {
+  await writePref(KEY_BROADCAST_PORT, clampPort(value));
+}
+
+export async function setBroadcastNtfyEnabled(value: boolean): Promise<void> {
+  await writePref(KEY_BROADCAST_NTFY_ENABLED, value);
+}
+
+export async function setBroadcastNtfyServer(value: string): Promise<void> {
+  await writePref(KEY_BROADCAST_NTFY_SERVER, value.trim());
+}
+
+export async function setBroadcastNtfyTopic(value: string): Promise<void> {
+  await writePref(KEY_BROADCAST_NTFY_TOPIC, value.trim());
+}
+
 export async function setShortcuts(
   value: Record<ShortcutId, KeyBinding[]> | {},
 ): Promise<void> {
@@ -592,6 +651,11 @@ export async function onPreferencesChange(
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_EDITOR_AUTO_SAVE]: "editorAutoSave",
     [KEY_EDITOR_AUTO_SAVE_DELAY]: "editorAutoSaveDelay",
+    [KEY_BROADCAST_AUTO_START]: "broadcastAutoStart",
+    [KEY_BROADCAST_PORT]: "broadcastPort",
+    [KEY_BROADCAST_NTFY_ENABLED]: "broadcastNtfyEnabled",
+    [KEY_BROADCAST_NTFY_SERVER]: "broadcastNtfyServer",
+    [KEY_BROADCAST_NTFY_TOPIC]: "broadcastNtfyTopic",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().

@@ -17,6 +17,7 @@ import {
 import type { Tab } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
 import { NotificationBell } from "@/modules/agents";
+import { BroadcastIndicator } from "@/modules/broadcast/BroadcastIndicator";
 import {
   ArrowUp01Icon,
   GridViewIcon,
@@ -274,6 +275,7 @@ export function Header({
             onActivateLocal={onActivateLocalAgent}
           />
           {restartButton}
+          <BroadcastIndicator />
           {settingsButton}
         </>
       )}
@@ -281,6 +283,7 @@ export function Header({
       {!IS_MAC && (
         <>
           {updateBadge}
+          <BroadcastIndicator />
           {settingsButton}
         </>
       )}

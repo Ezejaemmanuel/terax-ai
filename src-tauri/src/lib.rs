@@ -1,6 +1,6 @@
 pub mod modules;
 
-use modules::{agent, ai_history, fs, git, net, pty, secrets, shell, workspace};
+use modules::{agent, ai_history, broadcast, fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
@@ -120,6 +120,7 @@ pub fn run() {
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(ai_history::AiHistoryWatchState::default())
+        .manage(broadcast::commands::BroadcastState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
             workspace::bootstrap_registry(&registry);
@@ -208,6 +209,9 @@ pub fn run() {
             ai_history::session_git_init,
             ai_history::session_file_diff,
             ai_history::session_changes,
+            broadcast::commands::broadcast_start,
+            broadcast::commands::broadcast_stop,
+            broadcast::commands::broadcast_status,
             open_devtools,
             exit_app,
             ui_log,

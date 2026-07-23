@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod ai_history;
+pub mod broadcast;
 pub mod fs;
 pub mod git;
 pub mod net;
@@ -7,4 +8,5 @@ pub mod proc;
 pub mod pty;
 pub mod secrets;
 pub mod shell;
+pub mod transcript;
 pub mod workspace;
