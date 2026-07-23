@@ -99,6 +99,11 @@ export function TerminalPanel({
       for (const session of project.sessions) {
         if (!session.readable) continue;
         if (agentFilter !== "all" && session.agent !== agentFilter) continue;
+        // `statuses` only carries an entry while its pty is alive (see
+        // useStream), so this is "currently open", not "ever seen" — the
+        // session index below is built from history files on disk and would
+        // otherwise list every terminal that has ever run.
+        if (!(session.id in statuses)) continue;
         all.push({
           session,
           projectName: project.name,
@@ -254,8 +259,8 @@ export function TerminalPanel({
         {rows.length === 0 ? (
           <p className="px-3 py-4 text-center text-[11px] text-muted-foreground/60">
             {agentFilter === "all"
-              ? "No readable sessions yet."
-              : "No matching terminals."}
+              ? "No terminals open right now."
+              : "No matching terminals open right now."}
           </p>
         ) : grouped ? (
           <div className="pb-2">

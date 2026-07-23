@@ -48,8 +48,8 @@ function Collapsible({
         <span className="truncate">{label}</span>
       </button>
       {open && (
-        <div className="overflow-x-auto border-t border-border/60 px-2.5 py-2">
-          <pre className="whitespace-pre font-mono text-[11px] leading-relaxed">
+        <div className="border-t border-border/60 px-2.5 py-2">
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
             {body}
           </pre>
           {truncated && <Truncated />}

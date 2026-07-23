@@ -165,7 +165,15 @@ async fn events(State(state): State<AppState>, Query(q): Query<StreamQuery>) -> 
     ACTIVE_STREAMS.fetch_add(1, Ordering::Relaxed);
 
     let watched = resolve_watched(&state, q.session.as_deref()).await;
-    let stream = futures_util::stream::unfold(
+    // Replay every pty's last known status before the live tail, so a viewer
+    // who connects mid-session immediately knows what's open right now
+    // instead of guessing from history and waiting for the next transition.
+    let replay = futures_util::stream::iter(
+        bus::snapshot()
+            .into_iter()
+            .map(|e| Ok::<_, std::convert::Infallible>(status_sse(e))),
+    );
+    let live = futures_util::stream::unfold(
         StreamState {
             rx,
             watched,
@@ -175,6 +183,7 @@ async fn events(State(state): State<AppState>, Query(q): Query<StreamQuery>) -> 
         },
         step,
     );
+    let stream = futures_util::StreamExt::chain(replay, live);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default().interval(Duration::from_secs(20)))
@@ -211,6 +220,21 @@ struct StreamState {
     _guard: StreamGuard,
 }
 
+/// Shapes one `AgentStatus` bus event into the wire frame the client's status
+/// listener expects, shared between the live tail and the connect-time replay.
+fn status_sse(event: Event) -> SseEvent {
+    let Event::AgentStatus { pty_id, kind, agent, session } = event else {
+        unreachable!("status_sse only ever called with AgentStatus events");
+    };
+    let data = json!({
+        "ptyId": pty_id,
+        "kind": kind,
+        "agent": agent,
+        "session": session,
+    });
+    SseEvent::default().event("status").data(data.to_string())
+}
+
 async fn step(mut s: StreamState) -> Option<(Result<SseEvent, std::convert::Infallible>, StreamState)> {
     loop {
         let event = match s.rx.recv().await {
@@ -222,19 +246,8 @@ async fn step(mut s: StreamState) -> Option<(Result<SseEvent, std::convert::Infa
         };
 
         match event {
-            Event::AgentStatus {
-                pty_id,
-                kind,
-                agent,
-                session,
-            } => {
-                let data = json!({
-                    "ptyId": pty_id,
-                    "kind": kind,
-                    "agent": agent,
-                    "session": session,
-                });
-                return Some((Ok(SseEvent::default().event("status").data(data.to_string())), s));
+            Event::AgentStatus { .. } => {
+                return Some((Ok(status_sse(event)), s));
             }
             Event::IndexChanged => {
                 return Some((Ok(SseEvent::default().event("index").data("{}")), s));
@@ -247,11 +260,39 @@ async fn step(mut s: StreamState) -> Option<(Result<SseEvent, std::convert::Infa
                     continue;
                 }
                 let (offset, line) = (s.offset, s.line);
-                let w = watched.clone();
-                let Ok(Ok(append)) =
-                    tokio::task::spawn_blocking(move || reader::read_append(&w, format, offset, line))
+
+                // A writer that holds its own file locked across a whole turn
+                // (Cursor's CLI keeps its SQLite db open for the duration of a
+                // response, not just per line the way the JSONL agents do) can
+                // make a single read land mid-transaction. Silently dropping
+                // that read — the original behavior — meant the update simply
+                // never arrived until some unrelated later touch happened to
+                // retry it, which reads as "not realtime" even though nothing
+                // was structurally broken. Retrying a few times over ~1s
+                // absorbs ordinary lock contention within the same debounce
+                // window instead.
+                let mut append = None;
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                    let w = watched.clone();
+                    match tokio::task::spawn_blocking(move || reader::read_append(&w, format, offset, line))
                         .await
-                else {
+                    {
+                        Ok(Ok(a)) => {
+                            append = Some(a);
+                            break;
+                        }
+                        Ok(Err(e)) => log::warn!(
+                            "[broadcast] append read failed (attempt {}/3) for {}: {e}",
+                            attempt + 1,
+                            watched.display()
+                        ),
+                        Err(e) => log::warn!("[broadcast] append read task panicked: {e}"),
+                    }
+                }
+                let Some(append) = append else {
                     continue;
                 };
                 s.offset = append.byte_offset;

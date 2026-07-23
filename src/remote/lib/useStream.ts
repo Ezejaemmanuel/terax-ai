@@ -81,6 +81,19 @@ export function useStream({
         if (s.kind === "session") return;
         if (s.kind === "exited") {
           ptyRef.current.delete(s.ptyId);
+          // Drop the entry entirely rather than parking it on "exited": the
+          // terminal sidebar treats presence in this map as "open right now",
+          // so a closed terminal must disappear from it, not just fade its dot.
+          if (agent && sid) {
+            setStatuses((prev) => {
+              const key = `${agent}:${sid}`;
+              if (!(key in prev)) return prev;
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
+          }
+          return;
         }
         if (!agent || !sid) return;
         setStatuses((prev) => ({

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
   CheckListIcon,
@@ -16,6 +16,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
+import { DiffView } from "@/remote/components/DiffView";
 import { toRelativePath } from "@/remote/lib/path";
 import { useSessionCwd } from "@/remote/lib/sessionContext";
 import type { ToolRowBlock } from "@/remote/lib/mergeTranscript";
@@ -49,6 +50,64 @@ function toolMeta(name: string): { label: string; icon: HugeIcon } {
     if (m.test.test(lower)) return { label: m.label, icon: m.icon };
   }
   return { label: name, icon: ToolsIcon };
+}
+
+/// True for anything classified as a file mutation (Write/Edit/MultiEdit/
+/// NotebookEdit and each agent's equivalent). These get a diff instead of a
+/// raw JSON dump, and open by default: seeing what changed matters more here
+/// than for a read or a search.
+function isFileEditTool(name: string): boolean {
+  const { label } = toolMeta(name);
+  return label === "Write" || label === "Edit" || label === "Notebook";
+}
+
+const OLD_TEXT_KEYS = ["old_string", "old_str", "old_text", "original_text"];
+const NEW_TEXT_KEYS = ["new_string", "new_str", "new_text", "replacement_text"];
+const FULL_CONTENT_KEYS = ["content", "new_source", "file_text", "text"];
+
+type EditPreview =
+  | { kind: "replace"; old: string; next: string }
+  | { kind: "write"; content: string }
+  | { kind: "multi"; edits: { old: string; next: string }[] };
+
+/// Best-effort extraction of an edit's before/after text straight from the
+/// tool call's input, without needing a copy of the file as it existed
+/// before the edit (the transcript never carries one). Claude's `Edit` /
+/// `MultiEdit` and most agents' equivalents give us that directly via
+/// old/new string pairs; `Write` only gives the new content, so it renders
+/// as an add-only diff.
+function extractEdit(obj: Record<string, unknown> | null): EditPreview | null {
+  if (!obj) return null;
+  const str = (k: string) => (typeof obj[k] === "string" ? (obj[k] as string) : null);
+
+  if (Array.isArray(obj.edits)) {
+    const edits = (obj.edits as unknown[])
+      .map((e) => {
+        if (!e || typeof e !== "object") return null;
+        const r = e as Record<string, unknown>;
+        const old = typeof r.old_string === "string" ? r.old_string : null;
+        const next = typeof r.new_string === "string" ? r.new_string : null;
+        return old !== null && next !== null ? { old, next } : null;
+      })
+      .filter((e): e is { old: string; next: string } => e !== null);
+    if (edits.length) return { kind: "multi", edits };
+  }
+
+  for (const ok of OLD_TEXT_KEYS) {
+    const old = str(ok);
+    if (old === null) continue;
+    for (const nk of NEW_TEXT_KEYS) {
+      const next = str(nk);
+      if (next !== null) return { kind: "replace", old, next };
+    }
+  }
+
+  for (const ck of FULL_CONTENT_KEYS) {
+    const content = str(ck);
+    if (content !== null) return { kind: "write", content };
+  }
+
+  return null;
 }
 
 /// Keys different agents use for "the path this tool touched". Checked in
@@ -120,22 +179,29 @@ function deriveSummary(name: string, inputText: string, cwd: string | null): str
   return firstLine(inputText);
 }
 
-export function ToolCard({
+export const ToolCard = memo(function ToolCard({
   block,
   defaultOpen,
 }: {
   block: ToolRowBlock;
   defaultOpen: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  useEffect(() => {
-    setOpen(defaultOpen);
-  }, [defaultOpen]);
-
   const cwd = useSessionCwd();
   const { label, icon: Icon } = toolMeta(block.name);
   const summary = deriveSummary(block.name, block.input, cwd);
-  const inputObj = parseInput(block.input);
+  const inputObj = useMemo(() => parseInput(block.input), [block.input]);
+  const editPreview = useMemo(
+    () => (isFileEditTool(block.name) ? extractEdit(inputObj) : null),
+    [block.name, inputObj],
+  );
+
+  // File edits open by default regardless of the accordion setting: seeing
+  // what changed is the point, not something to dig for.
+  const effectiveDefaultOpen = defaultOpen || editPreview !== null;
+  const [open, setOpen] = useState(effectiveDefaultOpen);
+  useEffect(() => {
+    setOpen(effectiveDefaultOpen);
+  }, [effectiveDefaultOpen]);
 
   return (
     <div
@@ -193,9 +259,23 @@ export function ToolCard({
         <div className="space-y-2 border-t border-border/60 px-2.5 py-2">
           <div className="space-y-1">
             <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
-              Input
+              {editPreview ? "Diff" : "Input"}
             </div>
-            {inputObj ? (
+            {editPreview ? (
+              <div className="max-h-96 overflow-y-auto">
+                {editPreview.kind === "write" ? (
+                  <DiffView oldText="" newText={editPreview.content} />
+                ) : editPreview.kind === "replace" ? (
+                  <DiffView oldText={editPreview.old} newText={editPreview.next} />
+                ) : (
+                  <div className="space-y-1.5">
+                    {editPreview.edits.map((e, i) => (
+                      <DiffView key={i} oldText={e.old} newText={e.next} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : inputObj ? (
               <div className="prose-remote max-h-56 overflow-y-auto overflow-x-auto text-[11px]">
                 <Streamdown>{`\`\`\`json\n${block.input}\n\`\`\``}</Streamdown>
               </div>
@@ -246,4 +326,4 @@ export function ToolCard({
       )}
     </div>
   );
-}
+});

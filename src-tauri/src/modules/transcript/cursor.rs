@@ -31,8 +31,12 @@ fn load_messages(path: &Path) -> rusqlite::Result<Vec<Message>> {
     // (WAL mode) while a chat is active. Without a busy timeout, a read that
     // lands mid-commit fails immediately with "database is locked" instead of
     // waiting the writer out — the most common way live updates silently stop
-    // arriving for a session that's actually still being written to.
-    conn.busy_timeout(std::time::Duration::from_secs(3))?;
+    // arriving for a session that's actually still being written to. Kept
+    // short (not the several seconds a whole turn's write might hold the
+    // lock for) because the broadcast stream's own retry loop re-attempts
+    // this call a few times a beat apart; a long wait here would just stack
+    // with that and turn one contended read into a multi-second stall.
+    conn.busy_timeout(std::time::Duration::from_millis(750))?;
     let mut stmt = conn.prepare("SELECT rowid, id, data FROM blobs ORDER BY rowid ASC")?;
     let mut rows = stmt.query([])?;
 

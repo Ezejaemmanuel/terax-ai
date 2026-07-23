@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -14,6 +15,23 @@ const CAPACITY: usize = 256;
 /// the ordering.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SENDER: OnceLock<broadcast::Sender<Event>> = OnceLock::new();
+
+/// Last known status per live pty, so a viewer that connects mid-session sees
+/// which terminals are open right now instead of waiting for the next
+/// transition (or, worse, seeing every terminal that ever existed because the
+/// session index is built from history files on disk).
+static SNAPSHOT: OnceLock<Mutex<HashMap<u32, SnapshotEntry>>> = OnceLock::new();
+
+#[derive(Clone, Debug, Default)]
+struct SnapshotEntry {
+    kind: String,
+    agent: Option<String>,
+    session: Option<String>,
+}
+
+fn snapshot_map() -> &'static Mutex<HashMap<u32, SnapshotEntry>> {
+    SNAPSHOT.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -60,10 +78,54 @@ pub fn publish(event: Event) {
     if !is_enabled() {
         return;
     }
+    if let Event::AgentStatus { pty_id, ref kind, ref agent, ref session } = event {
+        record_snapshot(pty_id, kind, agent.as_deref(), session.as_deref());
+    }
     if let Some(tx) = SENDER.get() {
         // Err just means nobody is listening yet.
         let _ = tx.send(event);
     }
+}
+
+/// Folds one status transition into the live snapshot. Mirrors the merge the
+/// frontend does client-side: `agent` and `session` only ride on the events
+/// that first learn them, so they're carried forward; `session` markers don't
+/// carry a status `kind` of their own, so they update the mapping without
+/// clobbering the last real transition.
+fn record_snapshot(pty_id: u32, kind: &str, agent: Option<&str>, session: Option<&str>) {
+    let mut map = snapshot_map().lock().expect("snapshot poisoned");
+    if kind == "exited" {
+        map.remove(&pty_id);
+        return;
+    }
+    let entry = map.entry(pty_id).or_default();
+    if let Some(a) = agent {
+        entry.agent = Some(a.to_string());
+    }
+    if let Some(s) = session {
+        entry.session = Some(s.to_string());
+    }
+    if kind != "session" {
+        entry.kind = kind.to_string();
+    }
+}
+
+/// Snapshot of every pty currently known to be running an identified agent
+/// session, shaped as the same `AgentStatus` events the live stream sends so a
+/// new viewer can replay them through identical client-side merge logic.
+pub fn snapshot() -> Vec<Event> {
+    snapshot_map()
+        .lock()
+        .expect("snapshot poisoned")
+        .iter()
+        .filter(|(_, e)| e.agent.is_some() && e.session.is_some())
+        .map(|(&pty_id, e)| Event::AgentStatus {
+            pty_id,
+            kind: e.kind.clone(),
+            agent: e.agent.clone(),
+            session: e.session.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -96,6 +158,57 @@ mod tests {
             rx.recv().await.expect("event"),
             Event::SessionTouched { path: "p".into() }
         );
+
+        // A pty only shows up in the snapshot once both its agent and its
+        // session id are known — the two arrive on separate events.
+        publish(Event::AgentStatus {
+            pty_id: 99,
+            kind: "started".into(),
+            agent: Some("claude".into()),
+            session: None,
+        });
+        assert!(snapshot().is_empty(), "no session id yet");
+        publish(Event::AgentStatus {
+            pty_id: 99,
+            kind: "session".into(),
+            agent: None,
+            session: Some("s1".into()),
+        });
+        let snap = snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0],
+            Event::AgentStatus {
+                pty_id: 99,
+                kind: "started".into(),
+                agent: Some("claude".into()),
+                session: Some("s1".into()),
+            }
+        );
+
+        // A later real transition replaces the carried-forward kind...
+        publish(Event::AgentStatus {
+            pty_id: 99,
+            kind: "attention".into(),
+            agent: None,
+            session: None,
+        });
+        assert_eq!(snapshot()[0].clone(), Event::AgentStatus {
+            pty_id: 99,
+            kind: "attention".into(),
+            agent: Some("claude".into()),
+            session: Some("s1".into()),
+        });
+
+        // ...and exit drops the pty from the snapshot entirely.
+        publish(Event::AgentStatus {
+            pty_id: 99,
+            kind: "exited".into(),
+            agent: None,
+            session: None,
+        });
+        assert!(snapshot().is_empty());
+
         disable();
     }
 
