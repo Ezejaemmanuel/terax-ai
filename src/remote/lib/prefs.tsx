@@ -46,9 +46,11 @@ export interface RemotePrefs {
 const Ctx = createContext<RemotePrefs | null>(null);
 
 export function RemotePrefsProvider({ children }: { children: ReactNode }) {
-  // Open by default: on a phone a closed tool stack hides the run.
+  // Closed by default: tool input/output and thinking are often huge (whole
+  // files, long shell output) and expanding every one of them by default
+  // buries the actual conversation, especially on a phone screen.
   const [accordionsOpen, setAccordionsOpenState] = useState(() =>
-    readBool(KEY_ACCORDIONS, true),
+    readBool(KEY_ACCORDIONS, false),
   );
   const [theme, setThemeState] = useState<RemoteTheme>(readTheme);
 

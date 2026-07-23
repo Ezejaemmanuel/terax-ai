@@ -24,7 +24,8 @@ export function SettingsPanel() {
             </span>
             <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
               Thinking, tool calls, and results start expanded instead of
-              collapsed.
+              collapsed. Off by default so a tool that reads a whole file
+              doesn't bury the conversation.
             </span>
           </span>
           <input

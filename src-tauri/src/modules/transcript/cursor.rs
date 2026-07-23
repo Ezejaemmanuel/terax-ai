@@ -27,6 +27,12 @@ fn load_messages(path: &Path) -> rusqlite::Result<Vec<Message>> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    // The Cursor CLI holds this database open and writes to it continuously
+    // (WAL mode) while a chat is active. Without a busy timeout, a read that
+    // lands mid-commit fails immediately with "database is locked" instead of
+    // waiting the writer out — the most common way live updates silently stop
+    // arriving for a session that's actually still being written to.
+    conn.busy_timeout(std::time::Duration::from_secs(3))?;
     let mut stmt = conn.prepare("SELECT rowid, id, data FROM blobs ORDER BY rowid ASC")?;
     let mut rows = stmt.query([])?;
 
@@ -56,12 +62,35 @@ fn parse_row(rowid: i64, blob_id: &str, data: &[u8]) -> Option<Message> {
     };
 
     let content = v.get("content")?;
-    let blocks: Vec<Block> = match content {
+    let mut blocks: Vec<Block> = match content {
         // User messages are sometimes a bare string rather than a typed array.
         Value::String(s) => text_block(s).into_iter().collect(),
         Value::Array(items) => items.iter().filter_map(content_block).collect(),
         _ => return None,
     };
+
+    // The CLI composes the *entire* harness prompt — rules, workspace info,
+    // attached files, prior context — into the same text block that carries
+    // what the user actually typed, wrapped in `<user_query>`. Left in place,
+    // every user turn renders as a wall of injected instructions instead of a
+    // chat message.
+    if role == Role::User {
+        blocks = blocks
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::Text { text, .. } => {
+                    let (text, truncated) = clamp(&strip_cursor_context(&text));
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(Block::Text { text, truncated })
+                    }
+                }
+                other => Some(other),
+            })
+            .collect();
+    }
+
     if blocks.is_empty() {
         return None;
     }
@@ -75,6 +104,28 @@ fn parse_row(rowid: i64, blob_id: &str, data: &[u8]) -> Option<Message> {
         line: rowid.max(0) as usize,
         blocks,
     })
+}
+
+/// Extracts the human-written portion of a Cursor user turn. The CLI's full
+/// prompt is the harness's own instructions/context wrapped around the real
+/// ask, with the ask itself inside `<user_query>...</user_query>`. When that
+/// tag is present, only its contents are the actual message; everything else
+/// is injected plumbing (rules, workspace info, attached files, prior
+/// summaries) that would otherwise dominate every user turn in the transcript.
+/// Older sessions or short system-generated turns may have no such tag —
+/// those pass through unchanged.
+fn strip_cursor_context(s: &str) -> String {
+    const OPEN: &str = "<user_query>";
+    const CLOSE: &str = "</user_query>";
+    let Some(start) = s.find(OPEN) else {
+        return s.to_string();
+    };
+    let after = &s[start + OPEN.len()..];
+    match after.find(CLOSE) {
+        Some(end) => after[..end].trim().to_string(),
+        // Unterminated: better to show the raw text than silently drop it.
+        None => s.to_string(),
+    }
 }
 
 fn content_block(b: &Value) -> Option<Block> {
@@ -224,6 +275,48 @@ mod tests {
         ]);
         let messages = load_messages(&dir.path().join("store.db")).expect("load");
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn user_query_tag_strips_the_surrounding_harness_prompt() {
+        let dir = db_with(&[(
+            "b1",
+            r#"{"role":"user","content":"<user_info>os stuff</user_info>\n<user_query>\nwhat does this function do\n</user_query>"}"#,
+        )]);
+        let messages = load_messages(&dir.path().join("store.db")).expect("load");
+        assert_eq!(messages.len(), 1);
+        assert!(
+            matches!(&messages[0].blocks[0], Block::Text { text, .. } if text == "what does this function do")
+        );
+    }
+
+    #[test]
+    fn user_turns_without_a_query_tag_pass_through_unchanged() {
+        let dir = db_with(&[("b1", r#"{"role":"user","content":"hi there"}"#)]);
+        let messages = load_messages(&dir.path().join("store.db")).expect("load");
+        assert!(matches!(&messages[0].blocks[0], Block::Text { text, .. } if text == "hi there"));
+    }
+
+    #[test]
+    fn a_user_turn_that_is_pure_harness_noise_disappears() {
+        let dir = db_with(&[(
+            "b1",
+            r#"{"role":"user","content":"<user_query></user_query>"}"#,
+        )]);
+        let messages = load_messages(&dir.path().join("store.db")).expect("load");
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn assistant_text_is_never_run_through_the_query_stripper() {
+        let dir = db_with(&[(
+            "b1",
+            r#"{"role":"assistant","content":[{"type":"text","text":"<user_query>looks like a literal tag, not stripped</user_query>"}]}"#,
+        )]);
+        let messages = load_messages(&dir.path().join("store.db")).expect("load");
+        assert!(
+            matches!(&messages[0].blocks[0], Block::Text { text, .. } if text.contains("looks like a literal tag"))
+        );
     }
 
     #[test]
