@@ -16,8 +16,9 @@ pub struct SessionMeta {
     pub cwd: String,
     /// Zero-padded unix-ms, sorts lexicographically (matches ai_history).
     pub updated_at: String,
-    /// False for agents whose transcripts we cannot parse (Cursor is SQLite),
-    /// so the client can show the row without offering to open it.
+    /// False when the agent has no transcript source for this session yet
+    /// (e.g. Codex JSONL tracking isn't implemented), so the client can show
+    /// the row without offering to open it.
     pub readable: bool,
     #[serde(skip)]
     pub path: Option<PathBuf>,

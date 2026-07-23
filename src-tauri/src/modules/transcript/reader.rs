@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{Format, Message};
+use super::{cursor, Format, Message};
 
 /// Backward paging starts by parsing this many lines and doubles until it has
 /// a full page. Keeps a 50-message request off a 20k-line transcript.
@@ -42,6 +42,9 @@ pub fn read_page(
     before: Option<usize>,
     limit: usize,
 ) -> std::io::Result<Page> {
+    if format == Format::Cursor {
+        return cursor::read_page(path, before, limit);
+    }
     let bytes = std::fs::read(path)?;
     let byte_len = bytes.len() as u64;
     let text = String::from_utf8_lossy(&bytes);
@@ -86,6 +89,9 @@ pub fn read_append(
     byte_offset: u64,
     next_line: usize,
 ) -> std::io::Result<Append> {
+    if format == Format::Cursor {
+        return cursor::read_append(path, byte_offset, next_line);
+    }
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
 

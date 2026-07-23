@@ -1,7 +1,15 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "@/lib/utils";
 import { MessageBlock } from "@/remote/components/MessageBlock";
+import { buildRows, type Row as TranscriptRow } from "@/remote/lib/mergeTranscript";
 import type { Message } from "@/remote/lib/types";
 
 /// Rough first guess; every row is measured after mount.
@@ -9,12 +17,12 @@ const ESTIMATED_ROW = 140;
 /// Distance from the bottom still counted as "following along".
 const STICK_SLACK = 80;
 
-function roleLabel(role: Message["role"]) {
+function roleLabel(role: TranscriptRow["role"]) {
   return role === "assistant" ? "agent" : role;
 }
 
-function Row({ message }: { message: Message }) {
-  const isUser = message.role === "user";
+function Row({ row }: { row: TranscriptRow }) {
+  const isUser = row.role === "user";
   return (
     <div className="px-3 py-2 sm:px-5">
       <div
@@ -23,7 +31,7 @@ function Row({ message }: { message: Message }) {
           isUser ? "text-foreground/70" : "text-muted-foreground",
         )}
       >
-        {roleLabel(message.role)}
+        {roleLabel(row.role)}
       </div>
       <div
         className={cn(
@@ -33,7 +41,7 @@ function Row({ message }: { message: Message }) {
             : "border-transparent bg-transparent",
         )}
       >
-        {message.blocks.map((block, i) => (
+        {row.blocks.map((block, i) => (
           <MessageBlock key={i} block={block} />
         ))}
       </div>
@@ -52,19 +60,33 @@ export function Transcript({
   loadingOlder: boolean;
   onLoadOlder: () => void;
 }) {
+  const rows = useMemo(() => buildRows(messages), [messages]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
-  const countRef = useRef(messages.length);
+  const countRef = useRef(rows.length);
   // Scroll anchoring when older messages are prepended.
   const anchorRef = useRef<{ height: number; top: number } | null>(null);
+  const initialScrollDone = useRef(false);
 
   const virtualizer = useVirtualizer({
-    count: messages.length,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW,
-    getItemKey: (i) => messages[i]?.id ?? i,
+    getItemKey: (i) => rows[i]?.id ?? i,
     overscan: 6,
   });
+
+  const scrollToLatest = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || rows.length === 0) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+    // Virtual rows may not be measured yet; force the native scroller too.
+    requestAnimationFrame(() => {
+      const node = scrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+    });
+  }, [rows.length, virtualizer]);
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -77,25 +99,34 @@ export function Transcript({
     }
   }, [hasMore, loadingOlder, onLoadOlder]);
 
+  // New chat / first page: land at the bottom so the latest turn is in view and
+  // the user scrolls up for history.
+  useLayoutEffect(() => {
+    if (initialScrollDone.current || rows.length === 0) return;
+    initialScrollDone.current = true;
+    setAtBottom(true);
+    scrollToLatest();
+  }, [rows.length, scrollToLatest]);
+
   // Prepending older messages would otherwise yank the viewport to a different
   // part of the conversation.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const anchor = anchorRef.current;
     if (!el || !anchor) return;
-    if (messages.length > countRef.current) {
+    if (rows.length > countRef.current) {
       el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
       anchorRef.current = null;
     }
-  }, [messages.length]);
+  }, [rows.length]);
 
   useEffect(() => {
-    const grew = messages.length > countRef.current;
-    countRef.current = messages.length;
-    if (grew && atBottom && messages.length > 0) {
-      virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
+    const grew = rows.length > countRef.current;
+    countRef.current = rows.length;
+    if (grew && atBottom && rows.length > 0 && initialScrollDone.current) {
+      scrollToLatest();
     }
-  }, [messages.length, atBottom, virtualizer]);
+  }, [rows.length, atBottom, scrollToLatest]);
 
   const items = virtualizer.getVirtualItems();
 
@@ -127,7 +158,7 @@ export function Transcript({
                 transform: `translateY(${item.start}px)`,
               }}
             >
-              <Row message={messages[item.index]} />
+              <Row row={rows[item.index]} />
             </div>
           ))}
         </div>
@@ -136,9 +167,7 @@ export function Transcript({
       {!atBottom && (
         <button
           type="button"
-          onClick={() =>
-            virtualizer.scrollToIndex(messages.length - 1, { align: "end" })
-          }
+          onClick={scrollToLatest}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-border bg-card px-3 py-1.5 text-xs shadow-lg"
         >
           jump to latest

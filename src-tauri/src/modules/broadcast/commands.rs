@@ -212,8 +212,9 @@ async fn build_index() -> Vec<ProjectMeta> {
         ("claude", Some(Format::Claude), claude),
         ("codex", Some(Format::Codex), codex),
         ("command-code", Some(Format::CommandCode), command_code),
-        // Cursor stores transcripts in SQLite, so it is listed but not readable.
-        ("cursor", None, cursor),
+        // Cursor stores transcripts in a SQLite `store.db`; readable when one
+        // is found, same as the JSONL-backed agents.
+        ("cursor", Some(Format::Cursor), cursor),
     ];
 
     for (agent, format, projects) in groups {

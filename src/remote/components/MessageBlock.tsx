@@ -1,7 +1,9 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
 import { cn } from "@/lib/utils";
-import type { Block } from "@/remote/lib/types";
+import { useRemotePrefs } from "@/remote/lib/prefs";
+import type { RenderBlock } from "@/remote/lib/mergeTranscript";
+import { ToolCard } from "@/remote/components/ToolCard";
 
 function Truncated() {
   return (
@@ -11,31 +13,24 @@ function Truncated() {
   );
 }
 
-/// Long payloads stay closed by default. On a phone an expanded 16 KB tool
-/// result would bury the conversation.
 function Collapsible({
   label,
-  tone,
   body,
   truncated,
   defaultOpen,
 }: {
   label: string;
-  tone: "call" | "result" | "error";
   body: string;
   truncated: boolean;
   defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen]);
+
   return (
-    <div
-      className={cn(
-        "rounded-md border text-xs",
-        tone === "error"
-          ? "border-destructive/40 bg-destructive/5"
-          : "border-border bg-muted/40",
-      )}
-    >
+    <div className="rounded-md border border-border bg-muted/40 text-xs">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -72,8 +67,10 @@ function firstLine(s: string, max = 72) {
 export const MessageBlock = memo(function MessageBlock({
   block,
 }: {
-  block: Block;
+  block: RenderBlock;
 }) {
+  const { accordionsOpen } = useRemotePrefs();
+
   switch (block.kind) {
     case "text":
       return (
@@ -87,38 +84,14 @@ export const MessageBlock = memo(function MessageBlock({
       return (
         <Collapsible
           label={`thinking · ${firstLine(block.text, 56)}`}
-          tone="call"
           body={block.text}
           truncated={block.truncated}
-          defaultOpen={false}
+          defaultOpen={accordionsOpen}
         />
       );
 
-    case "toolCall":
-      return (
-        <Collapsible
-          label={`${block.name} · ${firstLine(block.input, 56)}`}
-          tone="call"
-          body={block.input}
-          truncated={block.truncated}
-          defaultOpen={false}
-        />
-      );
-
-    case "toolResult":
-      return (
-        <Collapsible
-          label={
-            block.isError
-              ? `error · ${firstLine(block.output, 56)}`
-              : `result · ${firstLine(block.output, 56)}`
-          }
-          tone={block.isError ? "error" : "result"}
-          body={block.output}
-          truncated={block.truncated}
-          defaultOpen={false}
-        />
-      );
+    case "tool":
+      return <ToolCard block={block} defaultOpen={accordionsOpen} />;
 
     case "image":
       return (

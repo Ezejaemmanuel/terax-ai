@@ -72,7 +72,7 @@ fn content_block(b: &Value) -> Option<Block> {
             b.get("input").unwrap_or(&Value::Null),
         )),
         "tool-result" => {
-            let (text, is_error) = output_text(b.get("output"));
+            let (text, is_error) = super::output_text(b.get("output"));
             Some(tool_result_block(
                 b.get("toolCallId").and_then(Value::as_str).unwrap_or_default(),
                 &text,
@@ -83,34 +83,6 @@ fn content_block(b: &Value) -> Option<Block> {
             alt: "attachment".to_string(),
         }),
         _ => None,
-    }
-}
-
-/// AI SDK tool output is a tagged value: `text`, `json`, `error-text`,
-/// `error-json`, or a `content` array.
-fn output_text(output: Option<&Value>) -> (String, bool) {
-    let Some(o) = output else {
-        return (String::new(), false);
-    };
-    match o {
-        Value::String(s) => (s.clone(), false),
-        Value::Object(_) => {
-            let kind = o.get("type").and_then(Value::as_str).unwrap_or("");
-            let is_error = kind.starts_with("error");
-            let text = match o.get("value") {
-                Some(v) => super::value_to_text(v),
-                None => match o.get("content").and_then(Value::as_array) {
-                    Some(items) => items
-                        .iter()
-                        .filter_map(|c| c.get("text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    None => super::value_to_text(o),
-                },
-            };
-            (text, is_error)
-        }
-        other => (super::value_to_text(other), false),
     }
 }
 
@@ -150,12 +122,12 @@ mod tests {
     #[test]
     fn content_array_output_is_joined() {
         let o = serde_json::json!({"type":"content","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]});
-        assert_eq!(output_text(Some(&o)), ("a\nb".to_string(), false));
+        assert_eq!(super::super::output_text(Some(&o)), ("a\nb".to_string(), false));
     }
 
     #[test]
     fn missing_output_is_empty_not_a_panic() {
-        assert_eq!(output_text(None), (String::new(), false));
+        assert_eq!(super::super::output_text(None), (String::new(), false));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod command_code;
+pub mod cursor;
 pub mod reader;
 
 use serde::Serialize;
@@ -65,6 +66,10 @@ pub enum Format {
     Claude,
     Codex,
     CommandCode,
+    /// SQLite-backed, not line-oriented — `reader::read_page`/`read_append`
+    /// branch out to `cursor::read_page`/`read_append` before this format's
+    /// `parse` (which is never called) would come into play.
+    Cursor,
 }
 
 impl Format {
@@ -73,17 +78,20 @@ impl Format {
             "claude" => Some(Format::Claude),
             "codex" => Some(Format::Codex),
             "command-code" => Some(Format::CommandCode),
+            "cursor" => Some(Format::Cursor),
             _ => None,
         }
     }
 
     /// Parse a contiguous run of JSONL lines. `first_line` is the absolute index
-    /// of `lines[0]` in the file so cursors stay stable across calls.
+    /// of `lines[0]` in the file so cursors stay stable across calls. Not used
+    /// for `Cursor`, whose transcript is a SQLite database, not line-oriented.
     pub fn parse(&self, lines: &[&str], first_line: usize) -> Vec<Message> {
         match self {
             Format::Claude => claude::parse(lines, first_line),
             Format::Codex => codex::parse(lines, first_line),
             Format::CommandCode => command_code::parse(lines, first_line),
+            Format::Cursor => Vec::new(),
         }
     }
 }
@@ -146,6 +154,35 @@ pub fn tool_result_block(id: &str, output: &str, is_error: bool) -> Block {
     }
 }
 
+/// AI SDK tool output is a tagged value: `text`, `json`, `error-text`,
+/// `error-json`, or a `content` array. Shared by `command_code` and `cursor`,
+/// whose stores both carry AI-SDK-shaped tool-result records.
+pub fn output_text(output: Option<&serde_json::Value>) -> (String, bool) {
+    let Some(o) = output else {
+        return (String::new(), false);
+    };
+    match o {
+        serde_json::Value::String(s) => (s.clone(), false),
+        serde_json::Value::Object(_) => {
+            let kind = o.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
+            let is_error = kind.starts_with("error");
+            let text = match o.get("value") {
+                Some(v) => value_to_text(v),
+                None => match o.get("content").and_then(serde_json::Value::as_array) {
+                    Some(items) => items
+                        .iter()
+                        .filter_map(|c| c.get("text").and_then(serde_json::Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    None => value_to_text(o),
+                },
+            };
+            (text, is_error)
+        }
+        other => (value_to_text(other), false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +220,6 @@ mod tests {
         assert_eq!(Format::from_id("claude"), Some(Format::Claude));
         assert_eq!(Format::from_id("codex"), Some(Format::Codex));
         assert_eq!(Format::from_id("command-code"), Some(Format::CommandCode));
-        assert_eq!(Format::from_id("cursor"), None);
+        assert_eq!(Format::from_id("cursor"), Some(Format::Cursor));
     }
 }

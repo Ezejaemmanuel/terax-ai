@@ -92,22 +92,29 @@ impl Batch {
             self.structural = true;
         }
         for p in ev.paths {
-            if is_transcript(&p) {
-                self.touched.insert(p);
+            if let Some(t) = transcript_path_for(&p) {
+                self.touched.insert(t);
             }
         }
     }
 }
 
-/// Only transcript files drive appends. Sidecars (`*.checkpoints.jsonl`,
-/// meta.json, session_index.jsonl) would otherwise cause pointless reads.
-fn is_transcript(p: &Path) -> bool {
-    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    name.ends_with(".jsonl")
-        && !name.ends_with(".checkpoints.jsonl")
-        && name != "session_index.jsonl"
+/// Maps a changed file to the transcript path `SessionMeta.path` uses, or
+/// `None` for sidecars that shouldn't drive an append (`*.checkpoints.jsonl`,
+/// meta.json, session_index.jsonl, ...).
+///
+/// Cursor is SQLite in WAL mode, so writes land on `store.db-wal`/`store.db-
+/// shm`, never `store.db` itself — those get mapped back to the sibling
+/// `store.db`, which is what the session index actually points at.
+fn transcript_path_for(p: &Path) -> Option<PathBuf> {
+    let name = p.file_name().and_then(|n| n.to_str())?;
+    if name.ends_with(".jsonl") && !name.ends_with(".checkpoints.jsonl") && name != "session_index.jsonl" {
+        return Some(p.to_path_buf());
+    }
+    if name == "store.db" || name == "store.db-wal" || name == "store.db-shm" {
+        return Some(p.with_file_name("store.db"));
+    }
+    None
 }
 
 /// History roots for the agents whose transcripts we can parse.
@@ -119,6 +126,7 @@ pub fn default_roots() -> Vec<PathBuf> {
         home.join(".claude").join("projects"),
         home.join(".codex").join("sessions"),
         home.join(".commandcode").join("projects"),
+        home.join(".cursor").join("chats"),
     ]
 }
 
@@ -137,11 +145,22 @@ mod tests {
 
     #[test]
     fn transcript_files_are_recognized_and_sidecars_are_not() {
-        assert!(is_transcript(Path::new("/a/s.jsonl")));
-        assert!(!is_transcript(Path::new("/a/s.checkpoints.jsonl")));
-        assert!(!is_transcript(Path::new("/a/session_index.jsonl")));
-        assert!(!is_transcript(Path::new("/a/meta.json")));
-        assert!(!is_transcript(Path::new("/a")));
+        assert!(transcript_path_for(Path::new("/a/s.jsonl")).is_some());
+        assert!(transcript_path_for(Path::new("/a/s.checkpoints.jsonl")).is_none());
+        assert!(transcript_path_for(Path::new("/a/session_index.jsonl")).is_none());
+        assert!(transcript_path_for(Path::new("/a/meta.json")).is_none());
+        assert!(transcript_path_for(Path::new("/a")).is_none());
+    }
+
+    #[test]
+    fn cursor_wal_and_shm_writes_map_back_to_store_db() {
+        let wal = transcript_path_for(Path::new("/chats/h/c/store.db-wal")).expect("mapped");
+        assert_eq!(wal, Path::new("/chats/h/c/store.db"));
+        let shm = transcript_path_for(Path::new("/chats/h/c/store.db-shm")).expect("mapped");
+        assert_eq!(shm, Path::new("/chats/h/c/store.db"));
+        let direct = transcript_path_for(Path::new("/chats/h/c/store.db")).expect("mapped");
+        assert_eq!(direct, Path::new("/chats/h/c/store.db"));
+        assert!(transcript_path_for(Path::new("/chats/h/c/prompt_history.json")).is_none());
     }
 
     #[test]

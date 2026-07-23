@@ -1,14 +1,8 @@
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
+import { AgentFilter } from "@/remote/components/AgentFilter";
 import { StatusDot } from "@/remote/components/StatusDot";
-import type { AgentStatus, ProjectMeta } from "@/remote/lib/types";
-
-const AGENT_LABEL: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  "command-code": "Command",
-  cursor: "Cursor",
-};
+import type { AgentId, AgentStatus, ProjectMeta } from "@/remote/lib/types";
 
 /// Live rows sort to the top: on a phone the thing that is running is the whole
 /// reason the page is open.
@@ -20,18 +14,35 @@ const RANK: Record<AgentStatus, number> = {
   exited: 4,
 };
 
+const AGENTS: AgentId[] = ["claude", "command-code", "cursor", "codex"];
+
 export function Sidebar({
   projects,
   statuses,
   activeId,
   onSelect,
+  agent,
+  onAgentChange,
 }: {
   projects: ProjectMeta[];
   statuses: Record<string, AgentStatus>;
   activeId: string | null;
   onSelect: (id: string) => void;
+  agent: AgentId;
+  onAgentChange: (id: AgentId) => void;
 }) {
   const [query, setQuery] = useState("");
+
+  const counts = useMemo(() => {
+    const out: Partial<Record<AgentId, number>> = {};
+    for (const id of AGENTS) out[id] = 0;
+    for (const p of projects) {
+      for (const s of p.sessions) {
+        out[s.agent] = (out[s.agent] ?? 0) + 1;
+      }
+    }
+    return out;
+  }, [projects]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -39,6 +50,7 @@ export function Sidebar({
       .map((p) => ({
         ...p,
         sessions: p.sessions
+          .filter((s) => s.agent === agent)
           .filter(
             (s) =>
               !q ||
@@ -53,15 +65,17 @@ export function Sidebar({
           }),
       }))
       .filter((p) => p.sessions.length > 0);
-  }, [projects, query, statuses]);
+  }, [projects, query, statuses, agent]);
 
   return (
     <div className="flex h-full flex-col bg-sidebar">
+      <AgentFilter active={agent} counts={counts} onSelect={onAgentChange} />
+
       <div className="border-b border-border p-2">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search sessions"
+          placeholder={`Search ${agent === "claude" ? "Claude Code" : agent === "command-code" ? "Command Code" : agent} sessions`}
           className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
         />
       </div>
@@ -97,15 +111,12 @@ export function Sidebar({
                       title={
                         session.readable
                           ? session.title
-                          : "Cursor stores transcripts in SQLite, not readable here"
+                          : "No transcript available for this session yet"
                       }
                     >
                       <StatusDot status={statuses[session.id]} />
                       <span className="min-w-0 flex-1 truncate">
                         {session.title}
-                      </span>
-                      <span className="shrink-0 text-[10px] uppercase text-muted-foreground">
-                        {AGENT_LABEL[session.agent] ?? session.agent}
                       </span>
                     </button>
                   </li>

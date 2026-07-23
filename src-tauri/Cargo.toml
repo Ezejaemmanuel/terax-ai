@@ -1,6 +1,6 @@
 [package]
 name = "terax"
-version = "0.7.28-jatique-70"
+version = "0.7.28-jatique-71"
 description = "Terax â€” an open-source AI-native terminal emulator"
 authors = ["crynta"]
 license = "Apache-2.0"
@@ -63,6 +63,9 @@ axum = { version = "0.8", default-features = false, features = [
 getrandom = "0.3"
 tempfile = "3"
 notify = "8.2.0"
+# Reads Cursor CLI's `store.db` transcripts. Bundled so we don't depend on a
+# system libsqlite3 (matters most for the Windows/macOS release builds).
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 proptest = "1"

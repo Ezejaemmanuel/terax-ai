@@ -19,7 +19,10 @@ pub struct AiSession {
     pub title: String,
     pub updated_at: String, // zero-padded unix-ms or ISO 8601; sorts lexicographically
     pub cwd: String,
-    pub jsonl_path: String, // absolute path to the session JSONL file
+    /// Absolute path to the transcript source: a JSONL file for Claude/Codex/
+    /// Command Code, or a `store.db` SQLite file for Cursor. Empty when the
+    /// agent doesn't (yet) expose one, which broadcast reads as "unreadable".
+    pub jsonl_path: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -831,12 +834,22 @@ pub async fn ai_history_command_code() -> Vec<AiProject> {
                 let title = read_commandcode_title(&path).unwrap_or_else(|| id.clone());
                 let updated_at = file_mtime_ms_str(&path);
 
+                // The transcript lives in a sibling `<id>.jsonl` next to the
+                // `.meta.json` this loop is iterating. Only point at it when
+                // it actually exists so `readable` in broadcast stays honest.
+                let transcript_path = project_dir.join(format!("{id}.jsonl"));
+                let jsonl_path = if transcript_path.is_file() {
+                    transcript_path.to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                };
+
                 sessions.push(AiSession {
                     id,
                     title,
                     updated_at,
                     cwd: full_path.clone(),
-                    jsonl_path: String::new(),
+                    jsonl_path,
                 });
             }
 
@@ -970,13 +983,23 @@ pub async fn ai_history_cursor(roots: Vec<String>) -> Vec<AiProject> {
                 } else {
                     meta.created_at_ms
                 };
+                // Cursor transcripts are SQLite (`store.db`), not JSONL, but we
+                // reuse this field to point broadcast at the transcript source —
+                // it just isn't line-oriented for this agent. Only set it when
+                // the file actually exists.
+                let store_path = chat_path.join("store.db");
+                let jsonl_path = if store_path.is_file() {
+                    store_path.to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                };
+
                 sessions.push(AiSession {
                     id: chat_id,
                     title: meta.title.filter(|t| !t.is_empty()).unwrap_or_else(|| "Untitled chat".to_string()),
                     updated_at: format!("{:020}", ts),
                     cwd: workspace.clone(),
-                    // Cursor transcripts are SQLite, not JSONL — no session-diff source.
-                    jsonl_path: String::new(),
+                    jsonl_path,
                 });
             }
 
