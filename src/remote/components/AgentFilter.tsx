@@ -43,9 +43,8 @@ export function AgentFilter({
             aria-pressed={isActive}
             onClick={() => onSelect(item.id)}
             className={cn(
-              "group relative flex items-center justify-center gap-1.5 rounded-md text-[11px] font-medium outline-none transition-[flex,background-color,color] duration-150",
+              "group relative flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium outline-none transition-colors duration-150",
               "focus-visible:ring-2 focus-visible:ring-primary/40",
-              isActive ? "flex-1 px-2" : "w-8 flex-none",
               isActive
                 ? "bg-foreground/[0.07] text-foreground dark:bg-foreground/[0.09]"
                 : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
@@ -68,9 +67,15 @@ export function AgentFilter({
                 className="shrink-0"
               />
             )}
-            {isActive ? <span className="truncate">{item.label}</span> : null}
             {count > 0 ? (
-              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border/60 bg-card px-1 text-[9px] font-semibold leading-none tabular-nums text-muted-foreground/95">
+              <span
+                className={cn(
+                  "inline-flex h-4 min-w-4 items-center justify-center rounded-full border px-1 text-[9px] font-semibold leading-none tabular-nums",
+                  isActive
+                    ? "border-border bg-card text-foreground"
+                    : "border-border/60 bg-card text-muted-foreground/95",
+                )}
+              >
                 {count > 99 ? "99+" : count}
               </span>
             ) : null}

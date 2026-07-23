@@ -6066,7 +6066,7 @@ dependencies = [
 
 [[package]]
 name = "terax"
-version = "0.7.28-jatique-74"
+version = "0.7.28-jatique-75"
 dependencies = [
  "axum",
  "bytes",
