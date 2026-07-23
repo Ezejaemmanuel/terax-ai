@@ -180,7 +180,7 @@ fn asset_fn(app: AppHandle) -> server::AssetFn {
         } else {
             format!("/{key}")
         };
-        app.asset_resolver().get(&path).map(|asset| Asset {
+        app.asset_resolver().get(path).map(|asset| Asset {
             bytes: asset.bytes,
             content_type: server::content_type_for(key),
         })
