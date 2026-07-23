@@ -55,13 +55,19 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Guards every route including static assets: an unauthenticated viewer must
-/// not even learn what the app looks like.
+/// Protects session data and the HTML shell. Bundled JS/CSS/images stay public:
+/// the browser fetches them without the `?t=` query that only rides on the
+/// first navigation, so gating those would blank the page after a successful
+/// auth'd HTML load.
 async fn auth_guard(
     State(state): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    if is_public_asset(req.uri().path()) {
+        return next.run(req).await;
+    }
+
     let header = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -84,6 +90,19 @@ async fn auth_guard(
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     res
+}
+
+/// True for hashed bundle files the HTML shell references. Paths without an
+/// extension are SPA routes and still need the token (they serve index.html).
+fn is_public_asset(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        ext,
+        "js" | "mjs" | "css" | "map" | "png" | "svg" | "webp" | "woff2" | "ico" | "jpg" | "jpeg" | "gif"
+    )
 }
 
 async fn sessions(State(state): State<AppState>) -> Json<Vec<ProjectMeta>> {
@@ -350,11 +369,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_route_requires_the_token() {
-        for uri in ["/api/sessions", "/api/sessions/s1", "/events", "/", "/app.js"] {
+    async fn session_routes_require_the_token() {
+        for uri in ["/api/sessions", "/api/sessions/s1", "/events", "/", "/session/abc"] {
             let (status, _) = get(state_with(None), uri).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} was reachable");
         }
+    }
+
+    #[tokio::test]
+    async fn bundled_assets_do_not_need_the_token() {
+        // Mirrors the real browser: HTML arrives with ?t=, then <script src>
+        // requests come without it.
+        let (status, body) = get(state_with(None), "/app.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("console.log"));
+
+        let (status, _) = get(state_with(None), "/logo.png").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn public_asset_paths_match_the_bundle() {
+        assert!(is_public_asset("/assets/remote-DzfmECxN.js"));
+        assert!(is_public_asset("/assets/remote-Bme5EMZm.css"));
+        assert!(is_public_asset("/logo.png"));
+        assert!(!is_public_asset("/"));
+        assert!(!is_public_asset("/api/sessions"));
+        assert!(!is_public_asset("/session/abc"));
     }
 
     #[tokio::test]
