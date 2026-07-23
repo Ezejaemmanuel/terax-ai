@@ -235,7 +235,7 @@ async fn build_index() -> Vec<ProjectMeta> {
                     cwd: s.cwd,
                     updated_at: s.updated_at,
                     readable,
-                    format: readable.then(|| format).flatten(),
+                    format: readable.then_some(format).flatten(),
                     path: readable.then_some(path).flatten(),
                 });
             }
