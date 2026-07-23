@@ -132,7 +132,7 @@ fn tool_result_text(b: &Value) -> (String, bool) {
 }
 
 fn to_io_err(e: rusqlite::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e.to_string())
 }
 
 /// `before`/`limit` mirror `reader::read_page`'s line-cursor semantics, but
