@@ -78,7 +78,26 @@ export function useStream({
         const sid = s.session ?? known.session;
         ptyRef.current.set(s.ptyId, { agent, session: sid });
 
-        if (s.kind === "session") return;
+        if (s.kind === "session") {
+          // The same pty can rebind to a fresh session id (the user started a
+          // new chat in a terminal that was already open, without exiting the
+          // old one first). Nothing ever signals the old id is "closed" in
+          // that case, so without this the old row lingers in the sidebar
+          // forever next to the new one. Carry its last known status onto the
+          // new id and drop the stale key.
+          if (known.agent && known.session && known.session !== sid && agent && sid) {
+            setStatuses((prev) => {
+              const oldKey = `${known.agent}:${known.session}`;
+              const carried = prev[oldKey];
+              if (!(oldKey in prev)) return prev;
+              const next = { ...prev };
+              delete next[oldKey];
+              if (carried !== undefined) next[`${agent}:${sid}`] = carried;
+              return next;
+            });
+          }
+          return;
+        }
         if (s.kind === "exited") {
           ptyRef.current.delete(s.ptyId);
           // Drop the entry entirely rather than parking it on "exited": the

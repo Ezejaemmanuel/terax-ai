@@ -11,6 +11,14 @@ use super::bus::{self, Event as BusEvent};
 /// that one agent turn does not produce a burst of reads.
 const DEBOUNCE: Duration = Duration::from_millis(120);
 const MAX_WINDOW: Duration = Duration::from_millis(800);
+/// `build_index()` re-scans and re-reads every session in every project, so it
+/// is not cheap enough to run on every message of an active turn. Structural
+/// changes (a session file created/removed) still refresh immediately — that's
+/// rare and exactly when staleness is most visible. Plain touches (a session
+/// gaining a title/cwd, or bumping its sort position) are coalesced to this
+/// interval instead, which still surfaces a brand-new chat within a few
+/// seconds without rebuilding the whole index on every keystroke-driven write.
+const TOUCH_INDEX_REFRESH_COOLDOWN: Duration = Duration::from_secs(3);
 
 /// Dropping this stops the watcher and its thread.
 pub struct WatchHandle {
@@ -46,6 +54,12 @@ pub fn spawn(roots: &[PathBuf]) -> WatchHandle {
 }
 
 fn pump(rx: mpsc::Receiver<notify::Result<Event>>) {
+    // Tracks the last touch-only index refresh so bursts of ordinary message
+    // activity coalesce onto `TOUCH_INDEX_REFRESH_COOLDOWN` instead of
+    // rebuilding the index on every debounce window. Lives for the thread's
+    // whole run, not per-batch, since it's the throttle across batches.
+    let mut last_touch_refresh: Option<Instant> = None;
+
     loop {
         let Ok(first) = rx.recv() else { return };
         let mut batch = Batch::default();
@@ -64,15 +78,41 @@ fn pump(rx: mpsc::Receiver<notify::Result<Event>>) {
             }
         }
 
-        for path in batch.touched {
+        for path in batch.touched.iter() {
             bus::publish(BusEvent::SessionTouched {
                 path: path.to_string_lossy().into_owned(),
             });
         }
-        if batch.structural {
+
+        if should_refresh_index(&batch, last_touch_refresh, TOUCH_INDEX_REFRESH_COOLDOWN, Instant::now()) {
             bus::publish(BusEvent::IndexChanged);
+            last_touch_refresh = Some(Instant::now());
         }
     }
+}
+
+/// A brand-new session's file is often created before it carries enough to be
+/// indexed (e.g. Claude Code's jsonl has no `cwd` until the first message
+/// lands, so it's filtered out of the index entirely until then). That later
+/// write is a Modify, not a Create/Remove, so gating the refetch on
+/// `structural` alone means the sidebar never learns the session exists once
+/// it *does* become indexable — only a Create elsewhere would coincidentally
+/// rescue it. Structural changes refresh right away since they're rare and
+/// staleness there is most visible; plain touches are throttled by
+/// `cooldown` since rebuilding the whole index on every message is not free.
+fn should_refresh_index(
+    batch: &Batch,
+    last_touch_refresh: Option<Instant>,
+    cooldown: Duration,
+    now: Instant,
+) -> bool {
+    if batch.structural {
+        return true;
+    }
+    if batch.touched.is_empty() {
+        return false;
+    }
+    last_touch_refresh.is_none_or(|t| now.saturating_duration_since(t) >= cooldown)
 }
 
 #[derive(Default)]
@@ -171,6 +211,50 @@ mod tests {
         b.add(ev(EventKind::Modify(ModifyKind::Any), "/a/t.jsonl"));
         assert_eq!(b.touched.len(), 2);
         assert!(!b.structural);
+    }
+
+    #[test]
+    fn structural_batches_always_refresh_the_index() {
+        let mut b = Batch::default();
+        b.add(ev(EventKind::Create(CreateKind::File), "/a/s.jsonl"));
+        assert!(should_refresh_index(&b, None, Duration::from_secs(3), Instant::now()));
+    }
+
+    #[test]
+    fn a_plain_touch_refreshes_the_index_when_never_refreshed_before() {
+        // Regression: a session that just gained its `cwd` (and thus became
+        // indexable) arrives as a Modify, not a Create. If only `structural`
+        // batches triggered a refetch, the sidebar would never learn about it.
+        let mut b = Batch::default();
+        b.add(ev(EventKind::Modify(ModifyKind::Any), "/a/s.jsonl"));
+        assert!(!b.structural);
+        assert!(should_refresh_index(&b, None, Duration::from_secs(3), Instant::now()));
+    }
+
+    #[test]
+    fn a_plain_touch_is_throttled_within_the_cooldown() {
+        let mut b = Batch::default();
+        b.add(ev(EventKind::Modify(ModifyKind::Any), "/a/s.jsonl"));
+        let now = Instant::now();
+        let last = now;
+        assert!(
+            !should_refresh_index(&b, Some(last), Duration::from_secs(3), now),
+            "a touch right after the last refresh must be coalesced"
+        );
+    }
+
+    #[test]
+    fn a_plain_touch_refreshes_again_once_the_cooldown_elapses() {
+        let mut b = Batch::default();
+        b.add(ev(EventKind::Modify(ModifyKind::Any), "/a/s.jsonl"));
+        let last = Instant::now();
+        let later = last + Duration::from_secs(4);
+        assert!(should_refresh_index(&b, Some(last), Duration::from_secs(3), later));
+    }
+
+    #[test]
+    fn an_empty_batch_never_refreshes_the_index() {
+        assert!(!should_refresh_index(&Batch::default(), None, Duration::from_secs(3), Instant::now()));
     }
 
     #[test]
