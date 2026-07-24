@@ -306,46 +306,38 @@ pub async fn claude_session_title(session_id: String) -> Option<String> {
     .flatten()
 }
 
-/// Most-recently-updated Cursor chat id for a workspace.
-/// Cursor stores chats under `~/.cursor/chats/<md5(path)>/<chatId>/meta.json`.
-/// Returns the chat directory name (used with `cursor-agent --resume=<id>`)
-/// or None when the folder has no prior Cursor sessions.
+/// One Cursor chat under `~/.cursor/chats/<hash>/<id>/`. Includes empty chats
+/// (`has_conversation: false`) so a fresh `cursor-agent` launch can be bound to
+/// its directory before the first turn lands.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorChatRef {
+    pub id: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub has_conversation: bool,
+}
+
+/// All Cursor chats for a workspace, newest `updated_at` first. Used to bind a
+/// precise chat id to a terminal (and to avoid handing every tab the same
+/// "latest" id on restore).
+#[tauri::command]
+pub async fn cursor_list_sessions(cwd: String) -> Vec<CursorChatRef> {
+    tokio::task::spawn_blocking(move || list_cursor_chats(&cwd))
+        .await
+        .unwrap_or_default()
+}
+
+/// Most-recently-updated Cursor chat id for a workspace that already has a
+/// conversation. Prefer `cursor_list_sessions` when the caller needs to exclude
+/// ids already bound to other tabs.
 #[tauri::command]
 pub async fn cursor_latest_session(cwd: String) -> Option<String> {
     tokio::task::spawn_blocking(move || {
-        let home = dirs::home_dir()?;
-        let chats_dir = home.join(".cursor").join("chats");
-        if !chats_dir.exists() {
-            return None;
-        }
-        let mut best: Option<(u64, String)> = None; // (updated_at_ms, chat_id)
-        for hash in cursor_root_hashes(&cwd) {
-            let hash_dir = chats_dir.join(&hash);
-            if !hash_dir.is_dir() {
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(&hash_dir) else { continue };
-            for entry in entries.flatten() {
-                let chat_path = entry.path();
-                if !chat_path.is_dir() {
-                    continue;
-                }
-                let Some(chat_id) = chat_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
-                    continue;
-                };
-                let meta_path = chat_path.join("meta.json");
-                let Ok(content) = fs::read_to_string(&meta_path) else { continue };
-                let Ok(meta) = serde_json::from_str::<CursorChatMeta>(&content) else { continue };
-                if !meta.has_conversation {
-                    continue;
-                }
-                let ts = if meta.updated_at_ms > 0 { meta.updated_at_ms } else { meta.created_at_ms };
-                if best.as_ref().is_none_or(|(bt, _)| ts > *bt) {
-                    best = Some((ts, chat_id));
-                }
-            }
-        }
-        let result = best.map(|(_, id)| id);
+        let result = list_cursor_chats(&cwd)
+            .into_iter()
+            .find(|c| c.has_conversation)
+            .map(|c| c.id);
         match &result {
             Some(id) => log::info!("[agent] cursor resume: latest session for cwd={cwd} -> {id}"),
             None => log::info!("[agent] cursor resume: no prior Cursor session for cwd={cwd}"),
@@ -355,6 +347,59 @@ pub async fn cursor_latest_session(cwd: String) -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+fn list_cursor_chats(cwd: &str) -> Vec<CursorChatRef> {
+    let Some(home) = dirs::home_dir() else {
+        return vec![];
+    };
+    let chats_dir = home.join(".cursor").join("chats");
+    if !chats_dir.exists() {
+        return vec![];
+    }
+    let mut out: Vec<CursorChatRef> = Vec::new();
+    for hash in cursor_root_hashes(cwd) {
+        let hash_dir = chats_dir.join(&hash);
+        if !hash_dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&hash_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let chat_path = entry.path();
+            if !chat_path.is_dir() {
+                continue;
+            }
+            let Some(chat_id) = chat_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+            else {
+                continue;
+            };
+            let meta_path = chat_path.join("meta.json");
+            let Ok(content) = fs::read_to_string(&meta_path) else {
+                continue;
+            };
+            let Ok(meta) = serde_json::from_str::<CursorChatMeta>(&content) else {
+                continue;
+            };
+            let updated_at_ms = if meta.updated_at_ms > 0 {
+                meta.updated_at_ms
+            } else {
+                meta.created_at_ms
+            };
+            out.push(CursorChatRef {
+                id: chat_id,
+                created_at_ms: meta.created_at_ms,
+                updated_at_ms,
+                has_conversation: meta.has_conversation,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    out
 }
 
 /// Most-recently-modified Command Code session title for a workspace.

@@ -1,6 +1,11 @@
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { relativeTime } from "@/lib/relativeTime";
+import {
+  pickNewCursorChat,
+  sleep,
+  type CursorChatRef,
+} from "@/modules/agents/lib/cursorResume";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import { writeToSession } from "@/modules/terminal";
 import type { TerminalTab } from "@/modules/tabs";
@@ -190,6 +195,17 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
         setTabTitle(tabId, tool === "claude" ? "Claude Code" : tool === "command-code" ? "Command Code" : tool === "cursor" ? "Cursor" : "Codex");
         const leafId = tabId + 1;
         const command = tool === "claude" ? "claude --permission-mode auto" : tool === "command-code" ? "command-code" : tool === "cursor" ? "cursor-agent" : "codex";
+        // Snapshot Cursor chats before launch so we can detect the new directory.
+        const cursorBeforeIds =
+          tool === "cursor"
+            ? new Set(
+                (
+                  await invoke<CursorChatRef[]>("cursor_list_sessions", {
+                    cwd,
+                  }).catch(() => [] as CursorChatRef[])
+                ).map((c) => c.id),
+              )
+            : null;
         const sent = await writeWhenReady(leafId, command);
         if (sent && tool === "claude") {
           onClaudeLaunch?.(tabId, leafId);
@@ -200,9 +216,19 @@ export const AiHistoryPanel = memo(function AiHistoryPanel({
           watchForHookMarker(leafId);
         }
         // Cursor CLI has no hook system, so no watchForHookMarker — status comes
-        // from the OSC 133 command detector (started/working/exited only).
-        if (sent && tool === "cursor") {
-          onClaudeLaunch?.(tabId, leafId);
+        // from the OSC 133 command detector (started/working/exited only). Bind
+        // the chat id once the new directory appears so restore can resume it.
+        if (sent && tool === "cursor" && cursorBeforeIds) {
+          let bound: string | null = null;
+          const deadline = Date.now() + 45_000;
+          while (!bound && Date.now() < deadline) {
+            const after = await invoke<CursorChatRef[]>("cursor_list_sessions", {
+              cwd,
+            }).catch(() => [] as CursorChatRef[]);
+            bound = pickNewCursorChat(cursorBeforeIds, after);
+            if (!bound) await sleep(700);
+          }
+          onClaudeLaunch?.(tabId, leafId, bound ?? undefined);
         }
         addFolder(cwd, projects.find((p) => p.fullPath === cwd)?.name ?? cwd.split(/[\\/]/).pop() ?? cwd);
       } finally {

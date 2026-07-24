@@ -88,8 +88,15 @@ import {
 import { StatusBar } from "@/modules/statusbar";
 import { MAX_PANES_PER_TAB, useTabs, useTabSession, useWorkspaceCwd } from "@/modules/tabs";
 import {
+  pickNewCursorChat,
+  pickUnboundCursorChat,
+  sleep,
+  type CursorChatRef,
+} from "@/modules/agents/lib/cursorResume";
+import {
   clearFocusedTerminal,
   disposeSession,
+  ensurePtyOpenForLeaf,
   findLeafCwd,
   hasLeaf,
   leafIds,
@@ -586,22 +593,49 @@ export default function App() {
     [],
   );
 
+  // Mark a terminal as a live Cursor CLI session so it survives restart and
+  // resumes via `cursor-agent --resume`. Cursor has no hook system, so there's
+  // no live title/status feed — the chat id is enough for precise resume.
+  const bindCursorTerminal = useCallback(
+    (tabId: number, leafId: number, sessionId?: string) => {
+      startedCursorLeavesRef.current.add(leafId);
+      updateTab(tabId, {
+        cursorSession: true,
+        ...(sessionId ? { cursorSessionId: sessionId } : {}),
+      });
+    },
+    [updateTab],
+  );
+
   const startCursorInLeaf = useCallback(
     async (
       cwd: string | undefined,
       leafId: number,
-      opts?: { knownSessionId?: string; fresh?: boolean },
-    ) => {
-      // Mirror claude's fallback: use knownSessionId when available, otherwise
-      // look up the most recent Cursor chat for this folder on disk.
-      const sessionId = opts?.fresh
+      tabId: number,
+      opts?: {
+        knownSessionId?: string;
+        fresh?: boolean;
+        /** Chat ids already claimed by other Cursor tabs in this workspace. */
+        excludeSessionIds?: ReadonlySet<string>;
+      },
+    ): Promise<string | null> => {
+      const exclude = opts?.excludeSessionIds ?? new Set<string>();
+      let sessionId: string | null = opts?.fresh
         ? null
-        : (opts?.knownSessionId ??
-          (cwd
-            ? await invoke<string | null>("cursor_latest_session", { cwd }).catch(
-                () => null,
-              )
-            : null));
+        : (opts?.knownSessionId ?? null);
+
+      // Snapshot before a fresh launch so we can detect the new chat directory.
+      let beforeIds: Set<string> | null = null;
+      if (!sessionId && cwd) {
+        const listed = await invoke<CursorChatRef[]>("cursor_list_sessions", {
+          cwd,
+        }).catch(() => [] as CursorChatRef[]);
+        beforeIds = new Set(listed.map((c) => c.id));
+        if (!opts?.fresh) {
+          sessionId = pickUnboundCursorChat(listed, exclude);
+        }
+      }
+
       // Cursor CLI has no hook system — no watchForHookMarker; status comes from
       // the OSC 133 command detector (started/working/exited only).
       const cmd = sessionId
@@ -613,9 +647,42 @@ export default function App() {
           sessionId ? `resume ${sessionId}` : "fresh session"
         }) cwd=${cwd ?? "?"}`,
       );
-      await writeCommandToSessionWhenReady(leafId, cmd);
+      const wrote = await writeCommandToSessionWhenReady(leafId, cmd);
+      if (!wrote) return sessionId;
+
+      // Persist the exact chat id on the tab. Without this, every restored tab
+      // in the same folder falls back to "latest" and they all reopen the same chat.
+      if (sessionId) {
+        bindCursorTerminal(tabId, leafId, sessionId);
+        return sessionId;
+      }
+
+      if (!cwd || !beforeIds) return null;
+
+      // Fresh launch: poll until Cursor creates (or first-updates) a chat dir.
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        await sleep(700);
+        const after = await invoke<CursorChatRef[]>("cursor_list_sessions", {
+          cwd,
+        }).catch(() => [] as CursorChatRef[]);
+        const created = pickNewCursorChat(beforeIds, after);
+        if (created) {
+          uiLog(
+            "info",
+            `bound cursor chat ${created} -> tab ${tabId} (leaf ${leafId})`,
+          );
+          bindCursorTerminal(tabId, leafId, created);
+          return created;
+        }
+      }
+      uiLog(
+        "warn",
+        `cursor chat id not observed for leaf ${leafId} within timeout`,
+      );
+      return null;
     },
-    [],
+    [bindCursorTerminal],
   );
 
   // Re-link every persisted Claude session id up front so the badge, title, and
@@ -660,16 +727,39 @@ export default function App() {
     });
   }, [activeTerminalTab, startCommandCodeInLeaf]);
 
+  // Resume every restored Cursor tab (not only the active one). Opens each
+  // deferred PTY in sequence so Windows ConPTY isn't flooded, then writes
+  // `cursor-agent --resume=<id>`. Bound chat ids keep tabs from collapsing onto
+  // the same "latest" conversation.
   useEffect(() => {
-    const t = activeTerminalTab;
-    if (!t || !t.cursorSession) return;
-    const leafId = t.activeLeafId;
-    if (startedCursorLeavesRef.current.has(leafId)) return;
-    startedCursorLeavesRef.current.add(leafId);
-    void startCursorInLeaf(t.cwd, leafId, {
-      knownSessionId: t.cursorSessionId,
-    });
-  }, [activeTerminalTab, startCursorInLeaf]);
+    const cursorTabs = tabs.filter(
+      (t): t is Extract<typeof t, { kind: "terminal" }> =>
+        t.kind === "terminal" && !!t.cursorSession,
+    );
+    if (cursorTabs.length === 0) return;
+
+    void (async () => {
+      const claimed = new Set(
+        cursorTabs
+          .map((t) => t.cursorSessionId)
+          .filter((id): id is string => !!id),
+      );
+      for (const t of cursorTabs) {
+        const leafId = t.activeLeafId;
+        if (startedCursorLeavesRef.current.has(leafId)) continue;
+        startedCursorLeavesRef.current.add(leafId);
+        await ensurePtyOpenForLeaf(leafId);
+        const bound = await startCursorInLeaf(t.cwd, leafId, t.id, {
+          knownSessionId: t.cursorSessionId,
+          excludeSessionIds: claimed,
+        });
+        if (bound) claimed.add(bound);
+        // Stagger ConPTY opens — the prior all-at-once attempt blanked the
+        // active terminal under the Windows lifecycle lock.
+        await sleep(300);
+      }
+    })();
+  }, [tabs, startCursorInLeaf]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
@@ -1441,20 +1531,6 @@ export default function App() {
     [updateTab],
   );
 
-  // Mark a terminal as a live Cursor CLI session so it survives restart and
-  // resumes via `cursor-agent --resume`. Cursor has no hook system, so there's
-  // no live title/status feed — the chat id is enough for precise resume.
-  const bindCursorTerminal = useCallback(
-    (tabId: number, leafId: number, sessionId?: string) => {
-      startedCursorLeavesRef.current.add(leafId);
-      updateTab(tabId, {
-        cursorSession: true,
-        ...(sessionId ? { cursorSessionId: sessionId } : {}),
-      });
-    },
-    [updateTab],
-  );
-
   // Mark a terminal as a live Claude session. Used by both the agent-hook
   // binding (once the session id is known) and the AI-history launches (at
   // launch time). It:
@@ -2015,7 +2091,7 @@ export default function App() {
                     });
                     setActiveId(tabId);
                     startedCursorLeavesRef.current.add(leafId);
-                    void startCursorInLeaf(cwd, leafId, { fresh: true });
+                    void startCursorInLeaf(cwd, leafId, tabId, { fresh: true });
                   }}
                 />
               </ResizablePanel>

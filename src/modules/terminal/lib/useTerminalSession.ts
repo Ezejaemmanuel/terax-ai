@@ -137,6 +137,28 @@ export async function writeCommandToSessionWhenReady(
 }
 
 /**
+ * Open a PTY for a leaf even when its tab is still hidden. Used to resume
+ * restored agent sessions without waiting for the user to focus each tab —
+ * background tabs otherwise have no PTY to write `--resume` into.
+ */
+export async function ensurePtyOpenForLeaf(
+  leafId: number,
+  timeoutMs = 8000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const s = sessions.get(leafId);
+    if (s) {
+      if (s.pty) return true;
+      if (!s.ptyOpening && !s.shellExited) ensurePtyOpen(leafId, s);
+      if (s.pty) return true;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+  }
+  return !!sessions.get(leafId)?.pty;
+}
+
+/**
  * Clear the scrollback and screen of the currently focused terminal, keeping
  * the active prompt line — macOS Terminal's ⌘K behaviour. Returns false when no
  * focused terminal slot is bound (e.g. focus is in the editor or AI panel).

@@ -199,6 +199,7 @@ pub fn run() {
             ai_history::claude_latest_session,
             ai_history::claude_session_title,
             ai_history::cursor_latest_session,
+            ai_history::cursor_list_sessions,
             ai_history::command_code_latest_session,
             ai_history::ai_history_codex,
             ai_history::ai_history_command_code,
