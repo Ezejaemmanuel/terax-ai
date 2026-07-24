@@ -398,7 +398,7 @@ fn list_cursor_chats(cwd: &str) -> Vec<CursorChatRef> {
             });
         }
     }
-    out.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    out.sort_by_key(|b| std::cmp::Reverse(b.updated_at_ms));
     out
 }
 
