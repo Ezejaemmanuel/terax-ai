@@ -25,10 +25,19 @@ import { vim } from "@replit/codemirror-vim";
 import {
   buildSharedExtensions,
   languageCompartment,
+  lspCompartment,
   vimCompartment,
 } from "./lib/extensions";
+import { setDiagnostics } from "@codemirror/lint";
+import {
+  isLspCandidate,
+  languageIdForPath,
+  rootForPathIn,
+  useLspStore,
+} from "@/modules/lsp";
 import { gitGutter, setGitBaseline } from "./lib/gitGutter";
 import { native, type GitRepoInfo } from "@/modules/ai/lib/native";
+import { onGitHeadChanged } from "@/lib/gitEvents";
 import { listenFsChanged, parentDir } from "@/modules/explorer/lib/watch";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 
@@ -202,9 +211,13 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       setShowSource(!showSource);
     }, [showSource]);
 
-    // Load the git baseline (index content) so the change gutter can mark
-    // added/modified/deleted lines. Best-effort: outside a repo, untracked, or
-    // any git error simply clears the gutter. Stable identity (reads pathRef),
+    // Repo the open file belongs to, learned on the last baseline load. Only
+    // used to decide whether a HEAD change in some repo concerns this pane.
+    const repoRootRef = useRef<string | null>(null);
+
+    // Load the git baseline (the file at HEAD) so the change gutter can mark
+    // added/modified/deleted lines. Best-effort: outside a repo or on any git
+    // error the gutter simply clears. Stable identity (reads pathRef),
     // and guards against a stale resolve landing after the file switched.
     const loadBaseline = useCallback(async () => {
       const view = cmRef.current?.view;
@@ -213,9 +226,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       const repo = await resolveRepoCached(parentDir(target));
       if (pathRef.current !== target) return;
       if (!repo) {
+        repoRootRef.current = null;
         cmRef.current?.view?.dispatch({ effects: setGitBaseline.of(null) });
         return;
       }
+      repoRootRef.current = repo.repoRoot;
       // Slice from the real (cased) string so git keeps the file's true casing,
       // but compare case-insensitively on Windows to find the prefix boundary.
       const root = repo.repoRoot.replace(/\\/g, "/").replace(/\/$/, "");
@@ -227,16 +242,14 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         : head === prefix;
       const rel = inRepo ? abs.slice(prefix.length) : abs;
       try {
-        const res = await native.gitDiffContent(repo.repoRoot, rel, false);
+        const res = await native.gitQuickDiffBaseline(repo.repoRoot, rel);
         if (pathRef.current !== target) return;
         cmRef.current?.view?.dispatch({
-          effects: setGitBaseline.of(res.isBinary ? null : res.originalContent),
+          effects: setGitBaseline.of(res.content),
         });
       } catch {
         if (pathRef.current !== target) return;
-        // Repo resolved but no index entry (untracked / new file): treat the
-        // whole file as added so the gutter still reflects it.
-        cmRef.current?.view?.dispatch({ effects: setGitBaseline.of("") });
+        cmRef.current?.view?.dispatch({ effects: setGitBaseline.of(null) });
       }
     }, []);
     const loadBaselineRef = useRef(loadBaseline);
@@ -262,6 +275,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         ...buildSharedExtensions(),
         gitGutter(),
         languageCompartment.of([]),
+        lspCompartment.of([]),
         inlineCompletion({
           getPrefs: () => {
             const s = usePreferencesStore.getState();
@@ -347,6 +361,64 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       };
     }, [path, doc.status]);
 
+    // Null unless this file sits under a project whose TypeScript server the
+    // user turned on. Subscribed, so enabling a project lights up open editors
+    // without reopening them.
+    const lspRoot = useLspStore((s) =>
+      isLspCandidate(path) ? rootForPathIn(s.enabled, path) : null,
+    );
+    const lspRootRef = useRef<string | null>(lspRoot);
+    lspRootRef.current = lspRoot;
+
+    useEffect(() => {
+      if (doc.status !== "ready" || !lspRoot) return;
+      const languageId = languageIdForPath(path);
+      if (!languageId) return;
+      const target = path;
+      let cancelled = false;
+
+      void (async () => {
+        try {
+          await native.lspDidOpen(lspRoot, target, liveContentRef.current, languageId);
+        } catch (error) {
+          useLspStore.getState().setStatus({
+            root: lspRoot,
+            state: "failed",
+            exe: null,
+            error: String(error),
+            openDocuments: 0,
+          });
+          return;
+        }
+        if (cancelled) return;
+        // A remembered project starts its server on this first open, so the
+        // strip only learns the real state now.
+        void useLspStore.getState().refreshStatus(lspRoot);
+        // Loaded only for files in an enabled project, so the protocol glue
+        // never reaches a window that has no language server running.
+        const { lspExtension } = await import("@/modules/lsp/editorExtension");
+        if (cancelled) return;
+        cmRef.current?.view?.dispatch({
+          effects: lspCompartment.reconfigure(
+            lspExtension({
+              getPath: () => pathRef.current,
+              getRoot: () => lspRootRef.current,
+            }),
+          ),
+        });
+      })();
+
+      return () => {
+        cancelled = true;
+        const view = cmRef.current?.view;
+        if (view) {
+          view.dispatch(setDiagnostics(view.state, []));
+          view.dispatch({ effects: lspCompartment.reconfigure([]) });
+        }
+        void native.lspDidClose(lspRoot, target).catch(() => {});
+      };
+    }, [path, doc.status, lspRoot]);
+
     // (Re)load the git baseline when the file opens or finishes loading.
     useEffect(() => {
       if (doc.status !== "ready") return;
@@ -371,6 +443,17 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         unlisten?.();
       };
     }, []);
+
+    // A commit rewrites no file on disk, so the fs watcher never fires for it,
+    // yet every open file in that repo just became unchanged relative to HEAD.
+    useEffect(
+      () =>
+        onGitHeadChanged((repoRoot) => {
+          const mine = repoRootRef.current;
+          if (mine && samePath(mine, repoRoot)) void loadBaselineRef.current();
+        }),
+      [],
+    );
 
     useImperativeHandle(
       ref,

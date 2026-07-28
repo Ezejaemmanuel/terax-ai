@@ -8,11 +8,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
+import { Composer } from "@/remote/components/Composer";
 import { SettingsPanel } from "@/remote/components/SettingsPanel";
 import { Sidebar } from "@/remote/components/Sidebar";
 import { StatusDot } from "@/remote/components/StatusDot";
 import { TerminalPanel } from "@/remote/components/TerminalPanel";
 import { Transcript } from "@/remote/components/Transcript";
+import { useConfig } from "@/remote/lib/useConfig";
 import { useRemotePrefs } from "@/remote/lib/prefs";
 import { useHashSession } from "@/remote/lib/useHashSession";
 import { useIndex } from "@/remote/lib/useIndex";
@@ -120,6 +122,7 @@ export function RemoteApp() {
   const [desktopSettings, setDesktopSettings] = useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
   const { theme, toggleTheme } = useRemotePrefs();
+  const config = useConfig();
 
   const transcript = useTranscript(sessionId);
   const { append, loadOlder, resume } = transcript;
@@ -136,6 +139,15 @@ export function RemoteApp() {
     () => findSession(projects, sessionId),
     [projects, sessionId],
   );
+
+  // The composer appears only where a reply can actually land: this broadcast
+  // permits replies, and this session belongs to an agent whose submit
+  // semantics are known. Whether the terminal is accepting input *right now* is
+  // a live condition, so the composer handles that itself from `statuses`.
+  const canReply =
+    config.reply.enabled &&
+    !!current &&
+    config.reply.agents.includes(current.agent);
 
   const select = useCallback(
     (id: string) => {
@@ -390,6 +402,15 @@ export function RemoteApp() {
               </SessionCwdProvider>
             )}
           </>
+        )}
+
+        {sessionId && canReply && current?.readable && (
+          <Composer
+            key={sessionId}
+            sessionId={sessionId}
+            status={statuses[sessionId]}
+            maxLength={config.reply.maxLength}
+          />
         )}
       </main>
     </div>

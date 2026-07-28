@@ -81,6 +81,8 @@ import { AiHistoryPanel, AiSessionDiffPane } from "@/modules/ai-history";
 import { TerminalListPanel } from "@/modules/terminals/TerminalListPanel";
 import { FolderStrip } from "@/modules/terminals/FolderStrip";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
+import { ProblemsPanel, useLspStore } from "@/modules/lsp";
+import { onOpenFileRequest } from "@/lib/openFileRequests";
 import {
   SourceControlPanel,
   useSourceControl,
@@ -1135,6 +1137,31 @@ export default function App() {
     [openFileTab],
   );
 
+  // Go-to-definition and the Problems list both ask for a file this way; they
+  // sit far below the tab layer and have no path to these handlers otherwise.
+  useEffect(
+    () =>
+      onOpenFileRequest(({ path, line }) => {
+        if (line == null) handleOpenFile(path, true);
+        else handleOpenFileAtLine(path, line);
+      }),
+    [handleOpenFile, handleOpenFileAtLine],
+  );
+
+  // Reads the remembered set only. No language server starts here: an enabled
+  // project spawns one when a file in it is opened.
+  useEffect(() => {
+    void useLspStore.getState().hydrate();
+  }, []);
+
+  const problemCount = useLspStore((s) => {
+    let total = 0;
+    for (const files of Object.values(s.problems)) {
+      for (const file of files) total += file.diagnostics.length;
+    }
+    return total;
+  });
+
   const handlePathRenamed = useCallback(
     (from: string, to: string) => {
       for (const t of tabs) {
@@ -1932,6 +1959,8 @@ export default function App() {
                         onAttachToAgent={handleAttachFileToAgent}
                         onOpenMarkdownPreview={openMarkdownPreview}
                       />
+                    ) : sidebarView === "problems" ? (
+                      <ProblemsPanel />
                     ) : sidebarView === "source-control" ? (
                       <SourceControlPanel
                         open
@@ -2013,6 +2042,7 @@ export default function App() {
                     activeView={sidebarView}
                     onSelectView={persistSidebarView}
                     changedCount={sourceControl.changedCount}
+                    problemCount={problemCount}
                   />
                 </div>
               </ResizablePanel>

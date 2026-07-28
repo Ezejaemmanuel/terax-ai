@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useLspStore } from "@/modules/lsp/store";
 
 export type ActiveFolder = {
   cwd: string;
@@ -57,6 +58,9 @@ export const useActiveFolderStore = create<ActiveFolderState>((set) => ({
     set((s) => {
       const next = s.folders.filter((f) => f.cwd !== cwd);
       savePinned(next);
+      // A closed folder has no UI left to switch its language server off, so
+      // stop it here. Its enablement is kept: reopening resumes where it was.
+      void useLspStore.getState().stopServer(cwd);
       return { folders: next };
     }),
 

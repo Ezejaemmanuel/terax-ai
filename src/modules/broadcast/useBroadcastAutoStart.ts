@@ -25,11 +25,13 @@ export function useBroadcastAutoStart(): void {
           server: prefs.broadcastNtfyServer || BROADCAST_NTFY_SERVER_DEFAULT,
           topic: prefs.broadcastNtfyTopic,
         },
+        allowReplies: prefs.broadcastAllowReplies,
       });
     })();
   }, [
     hydrated,
     init,
+    prefs.broadcastAllowReplies,
     prefs.broadcastAutoStart,
     prefs.broadcastNtfyEnabled,
     prefs.broadcastNtfyServer,

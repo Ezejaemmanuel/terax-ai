@@ -3,8 +3,9 @@ import { useActiveFolderStore } from "./activeFolderStore";
 import type { SidebarViewId } from "@/modules/sidebar";
 import { FolderOpenIcon, Bookmark01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useMemo } from "react";
+import { Fragment, memo, useCallback, useMemo } from "react";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
+import { LspToggle } from "@/modules/lsp";
 
 type Props = {
   tabs: Tab[];
@@ -58,67 +59,72 @@ export const FolderStrip = memo(function FolderStrip({
         const isActiveTab = folderTabId === activeId;
 
         return (
-          <div key={folder.cwd} className="group/chip relative flex items-center">
-            <button
-              type="button"
-              disabled={folderTabId == null && !canSwitch}
-              onClick={() => {
-                if (folderTabId != null) {
-                  onSetActiveId(folderTabId);
-                } else if (canSwitch) {
-                  onSwitchToFolder(folder.cwd);
-                }
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
-                isActiveTab
-                  ? "bg-foreground/[0.09] text-foreground"
-                  : folderTabId != null
-                    ? "bg-foreground/[0.05] text-foreground/80 hover:bg-foreground/[0.08] hover:text-foreground"
-                    : canSwitch
-                      ? "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground"
-                      : "text-muted-foreground/50 cursor-default",
-              )}
-            >
-              <HugeiconsIcon
-                icon={FolderOpenIcon}
-                size={12}
-                strokeWidth={1.75}
-                className="shrink-0"
-              />
-              <span className="max-w-[120px] truncate">{folder.name}</span>
-              {folderTabId != null && (
-                <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-              )}
-            </button>
-
-            {/* Pin + remove controls on hover */}
-            <div className="absolute -right-1 -top-1 hidden gap-0.5 group-hover/chip:flex">
+          // The toggle sits outside the chip so the hover overlay, which is
+          // anchored to the chip's right edge, never covers it.
+          <Fragment key={folder.cwd}>
+            <div className="group/chip relative flex items-center">
               <button
                 type="button"
-                title={folder.pinned ? "Unpin folder" : "Pin folder"}
-                onClick={() => pinFolder(folder.cwd)}
+                disabled={folderTabId == null && !canSwitch}
+                onClick={() => {
+                  if (folderTabId != null) {
+                    onSetActiveId(folderTabId);
+                  } else if (canSwitch) {
+                    onSwitchToFolder(folder.cwd);
+                  }
+                }}
                 className={cn(
-                  "flex size-4 items-center justify-center rounded-sm text-[9px]",
-                  folder.pinned
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-border text-muted-foreground hover:bg-foreground/20",
+                  "flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                  isActiveTab
+                    ? "bg-foreground/[0.09] text-foreground"
+                    : folderTabId != null
+                      ? "bg-foreground/[0.05] text-foreground/80 hover:bg-foreground/[0.08] hover:text-foreground"
+                      : canSwitch
+                        ? "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground"
+                        : "text-muted-foreground/50 cursor-default",
                 )}
               >
-                <HugeiconsIcon icon={Bookmark01Icon} size={8} strokeWidth={2} />
+                <HugeiconsIcon
+                  icon={FolderOpenIcon}
+                  size={12}
+                  strokeWidth={1.75}
+                  className="shrink-0"
+                />
+                <span className="max-w-[120px] truncate">{folder.name}</span>
+                {folderTabId != null && (
+                  <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
+                )}
               </button>
-              {!folder.pinned && (
+
+              {/* Pin + remove controls on hover */}
+              <div className="absolute -right-1 -top-1 hidden gap-0.5 group-hover/chip:flex">
                 <button
                   type="button"
-                  title="Remove"
-                  onClick={() => removeFolder(folder.cwd)}
-                  className="flex size-4 items-center justify-center rounded-sm bg-border text-[9px] text-muted-foreground hover:bg-foreground/20"
+                  title={folder.pinned ? "Unpin folder" : "Pin folder"}
+                  onClick={() => pinFolder(folder.cwd)}
+                  className={cn(
+                    "flex size-4 items-center justify-center rounded-sm text-[9px]",
+                    folder.pinned
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-border text-muted-foreground hover:bg-foreground/20",
+                  )}
                 >
-                  ✕
+                  <HugeiconsIcon icon={Bookmark01Icon} size={8} strokeWidth={2} />
                 </button>
-              )}
+                {!folder.pinned && (
+                  <button
+                    type="button"
+                    title="Remove"
+                    onClick={() => removeFolder(folder.cwd)}
+                    className="flex size-4 items-center justify-center rounded-sm bg-border text-[9px] text-muted-foreground hover:bg-foreground/20"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+            <LspToggle root={folder.cwd} />
+          </Fragment>
         );
       })}
     </div>

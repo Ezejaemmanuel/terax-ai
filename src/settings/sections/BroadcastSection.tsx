@@ -5,6 +5,7 @@ import { useBroadcastStore } from "@/modules/broadcast/useBroadcastStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   BROADCAST_NTFY_SERVER_DEFAULT,
+  setBroadcastAllowReplies,
   setBroadcastAutoStart,
   setBroadcastNtfyEnabled,
   setBroadcastNtfyServer,
@@ -71,6 +72,7 @@ export function BroadcastSection() {
       server: prefs.broadcastNtfyServer || BROADCAST_NTFY_SERVER_DEFAULT,
       topic: prefs.broadcastNtfyTopic,
     },
+    allowReplies: prefs.broadcastAllowReplies,
   };
 
   const copyLink = async () => {
@@ -91,7 +93,7 @@ export function BroadcastSection() {
     <div className="flex flex-col gap-5">
       <SectionHeader
         title="Broadcast"
-        description="Serve a read-only view of your agent sessions to other devices on this wifi network. Nothing leaves your network."
+        description="Serve a view of your agent sessions to other devices on this wifi network. Read-only unless you turn on replies below. Nothing leaves your network."
       />
 
       <div className="flex flex-col gap-2">
@@ -173,6 +175,38 @@ export function BroadcastSection() {
             }}
           />
         </SettingRow>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <SectionHeader
+          title="Replies"
+          description="Lets you answer an agent from the viewer. What you send is typed into the terminal that session is running in, exactly as if you had typed it here."
+        />
+
+        <SettingRow
+          title="Allow replies from the viewer"
+          description="Claude Code only for now. Off by default: a link that can type into a coding agent can run commands on this machine."
+        >
+          <Switch
+            checked={prefs.broadcastAllowReplies}
+            onCheckedChange={(v) => void setBroadcastAllowReplies(v)}
+          />
+        </SettingRow>
+
+        {prefs.broadcastAllowReplies && (
+          <p className="px-1 text-[11px] text-muted-foreground">
+            Treat the link like a password while this is on. Anyone who has it
+            can send instructions to your running agents.
+          </p>
+        )}
+
+        {info && prefs.broadcastAllowReplies !== info.allowReplies && (
+          <p className="px-1 text-[11px] text-muted-foreground">
+            This applies on the next start — the broadcast currently running{" "}
+            {info.allowReplies ? "accepts replies" : "is read-only"}. Use
+            Regenerate token above to restart now.
+          </p>
+        )}
       </div>
 
       <div className="flex flex-col gap-2">

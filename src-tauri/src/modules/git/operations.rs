@@ -8,9 +8,9 @@ use crate::modules::git::process::{
     read_text_file, run_git,
 };
 use crate::modules::git::types::{
-    DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
-    GitLogEntry, GitOutput, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
-    TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
+    DiscardEntry, GitBaselineResult, GitCommitFileChange, GitCommitResult, GitDiffContentResult,
+    GitDiffResult, GitLogEntry, GitOutput, GitPanelSnapshot, GitPushResult, GitRepoInfo,
+    GitStatusSnapshot, TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
 };
 use crate::modules::git::utils::{
     authorized_repo_root, canonical_dir, resolve_within_repo, split_upstream, ResolvedGitDirectory,
@@ -258,6 +258,97 @@ pub fn diff_content(
         fallback_patch: patch.diff_text,
         truncated: patch.truncated,
     })
+}
+
+/// Baseline for the editor's change gutter: the file as it stands at HEAD, so
+/// the gutter marks everything since the last commit whether or not it is
+/// staged. A staged rename is followed back to its origin at HEAD; a file that
+/// does not exist at HEAD (untracked, or added but never committed) has an
+/// empty baseline, which renders the whole file as added.
+pub fn quick_diff_baseline(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<GitBaselineResult> {
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+    let worktree_path = resolve_within_repo(&repo_root.local_path, path)?;
+    let rel_path = pathspec(&repo_root.local_path, &worktree_path);
+
+    let source = match show_at_head(&repo_root, &rel_path)? {
+        TextSource::Missing => match staged_rename_origin(&repo_root, &rel_path)? {
+            Some(origin) => show_at_head(&repo_root, &origin)?,
+            None => TextSource::Missing,
+        },
+        found => found,
+    };
+
+    Ok(match source {
+        TextSource::Binary => GitBaselineResult {
+            content: None,
+            is_binary: true,
+        },
+        TextSource::Missing => GitBaselineResult {
+            content: Some(String::new()),
+            is_binary: false,
+        },
+        TextSource::Text(text) => GitBaselineResult {
+            content: Some(text),
+            is_binary: false,
+        },
+    })
+}
+
+fn show_at_head(repo_root: &ResolvedGitDirectory, rel_path: &str) -> Result<TextSource> {
+    git_show_text(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        &format!("HEAD:{rel_path}"),
+    )
+}
+
+/// The pre-rename path of a staged rename whose destination is `rel_path`.
+/// The diff is deliberately unfiltered: pathspec limiting runs before rename
+/// detection, so restricting it to the new path would hide the pairing and
+/// report a plain addition instead.
+fn staged_rename_origin(
+    repo_root: &ResolvedGitDirectory,
+    rel_path: &str,
+) -> Result<Option<String>> {
+    let output = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        [
+            OsStr::new("diff"),
+            OsStr::new("--cached"),
+            OsStr::new("--name-status"),
+            OsStr::new("-M"),
+            OsStr::new("-z"),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    if output.timed_out || output.exit_code != Some(0) {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_rename_origin(&text, rel_path))
+}
+
+fn parse_rename_origin(name_status_z: &str, rel_path: &str) -> Option<String> {
+    let mut fields = name_status_z.split('\0').filter(|f| !f.is_empty());
+    while let Some(status) = fields.next() {
+        let renamed = status.starts_with('R') || status.starts_with('C');
+        let first = fields.next()?;
+        if !renamed {
+            continue;
+        }
+        let second = fields.next()?;
+        if second == rel_path {
+            return Some(first.to_string());
+        }
+    }
+    None
 }
 
 pub fn stage(
@@ -979,6 +1070,23 @@ fn pathspec(repo_root: &Path, absolute: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_origin_pairs_destination_with_source() {
+        let out = "M\0src/a.ts\0R096\0src/old.ts\0src/new.ts\0A\0src/c.ts\0";
+        assert_eq!(
+            parse_rename_origin(out, "src/new.ts"),
+            Some("src/old.ts".into())
+        );
+        assert_eq!(parse_rename_origin(out, "src/a.ts"), None);
+        assert_eq!(parse_rename_origin(out, "src/old.ts"), None);
+    }
+
+    #[test]
+    fn rename_origin_is_none_without_renames() {
+        assert_eq!(parse_rename_origin("M\0a.ts\0D\0b.ts\0", "a.ts"), None);
+        assert_eq!(parse_rename_origin("", "a.ts"), None);
+    }
 
     #[test]
     fn sha_is_safe_accepts_hex() {

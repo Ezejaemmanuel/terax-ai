@@ -3,6 +3,7 @@ pub mod ai_history;
 pub mod broadcast;
 pub mod fs;
 pub mod git;
+pub mod lsp;
 pub mod net;
 pub mod proc;
 pub mod pty;

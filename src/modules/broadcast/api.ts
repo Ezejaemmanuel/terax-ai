@@ -5,11 +5,16 @@ export interface BroadcastInfo {
   url: string;
   token: string;
   port: number;
+  /// What the *running* server does, which differs from the preference until
+  /// it is restarted.
+  allowReplies: boolean;
 }
 
 export interface BroadcastConfig {
   port?: number;
   ntfy: { enabled: boolean; server: string; topic: string };
+  /// Lets viewers type into the terminal running a session. Read-only without it.
+  allowReplies: boolean;
 }
 
 export function broadcastStart(config: BroadcastConfig): Promise<BroadcastInfo> {

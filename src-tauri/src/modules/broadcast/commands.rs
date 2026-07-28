@@ -9,9 +9,10 @@ use tauri::{AppHandle, Manager, State};
 use super::bus::{self, Event};
 use super::model::{ProjectMeta, SessionMeta};
 use super::notify_out::{self, Debouncer, NtfyConfig};
-use super::server::{self, Asset, AppState};
+use super::server::{self, AppState, Asset};
 use super::{token, watch};
 use crate::modules::ai_history::{self, AiProject};
+use crate::modules::pty::{self, PtyState};
 use crate::modules::transcript::Format;
 
 const DEFAULT_PORT: u16 = 7331;
@@ -33,6 +34,9 @@ pub struct BroadcastInfo {
     pub url: String,
     pub token: String,
     pub port: u16,
+    /// What the running server actually does. The preference can be changed
+    /// while it runs; this only moves on a restart, so the UI can say which.
+    pub allow_replies: bool,
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -41,6 +45,11 @@ pub struct BroadcastConfig {
     pub port: Option<u16>,
     #[serde(default)]
     pub ntfy: NtfyConfig,
+    /// Lets viewers type into the terminal running a session. Defaults off on
+    /// purpose: without it the broadcast is a read-only mirror, and a leaked
+    /// link exposes transcripts rather than the machine.
+    #[serde(default)]
+    pub allow_replies: bool,
 }
 
 #[tauri::command]
@@ -72,6 +81,7 @@ pub async fn broadcast_start(
         url: format!("http://{host}:{bound}/?t={secret}"),
         token: secret.clone(),
         port: bound,
+        allow_replies: config.allow_replies,
     };
 
     let tx = bus::enable();
@@ -82,6 +92,9 @@ pub async fn broadcast_start(
         token: Arc::new(secret),
         index: index_fn(),
         assets: asset_fn(app.clone()),
+        write: write_fn(app.clone()),
+        live: Arc::new(bus::find_live),
+        allow_replies: config.allow_replies,
     };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let router = server::router(state);
@@ -185,6 +198,12 @@ fn asset_fn(app: AppHandle) -> server::AssetFn {
             content_type: server::content_type_for(key),
         })
     })
+}
+
+/// Types remote input into a live pty. Goes through the same writer the local
+/// terminal uses, so a reply is indistinguishable from having typed it here.
+fn write_fn(app: AppHandle) -> server::WriteFn {
+    Arc::new(move |id, data| pty::write_to(app.state::<PtyState>().inner(), id, &data))
 }
 
 fn index_fn() -> server::IndexFn {

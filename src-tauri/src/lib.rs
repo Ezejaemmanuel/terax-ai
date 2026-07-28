@@ -1,6 +1,6 @@
 pub mod modules;
 
-use modules::{agent, ai_history, broadcast, fs, git, net, pty, secrets, shell, workspace};
+use modules::{agent, ai_history, broadcast, fs, git, lsp, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
@@ -121,6 +121,8 @@ pub fn run() {
         .manage(fs::watch::FsWatchState::default())
         .manage(ai_history::AiHistoryWatchState::default())
         .manage(broadcast::commands::BroadcastState::default())
+        // Empty until a project is enabled; holds no process before then.
+        .manage(lsp::LspState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
             workspace::bootstrap_registry(&registry);
@@ -159,6 +161,7 @@ pub fn run() {
             git::commands::git_status,
             git::commands::git_diff,
             git::commands::git_diff_content,
+            git::commands::git_quick_diff_baseline,
             git::commands::git_stage,
             git::commands::git_unstage,
             git::commands::git_discard,
@@ -210,6 +213,17 @@ pub fn run() {
             ai_history::session_git_init,
             ai_history::session_file_diff,
             ai_history::session_changes,
+            lsp::commands::lsp_start,
+            lsp::commands::lsp_stop,
+            lsp::commands::lsp_stop_all,
+            lsp::commands::lsp_statuses,
+            lsp::commands::lsp_did_open,
+            lsp::commands::lsp_did_change,
+            lsp::commands::lsp_did_close,
+            lsp::commands::lsp_diagnostics,
+            lsp::commands::lsp_definition,
+            lsp::commands::lsp_hover,
+            lsp::commands::lsp_project_check,
             broadcast::commands::broadcast_start,
             broadcast::commands::broadcast_stop,
             broadcast::commands::broadcast_status,

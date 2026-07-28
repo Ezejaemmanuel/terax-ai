@@ -96,6 +96,7 @@ export type Preferences = {
   broadcastNtfyEnabled: boolean;
   broadcastNtfyServer: string;
   broadcastNtfyTopic: string;
+  broadcastAllowReplies: boolean;
 };
 
 const STORE_PATH = "terax-settings.json";
@@ -146,6 +147,7 @@ const KEY_BROADCAST_PORT = "broadcastPort";
 const KEY_BROADCAST_NTFY_ENABLED = "broadcastNtfyEnabled";
 const KEY_BROADCAST_NTFY_SERVER = "broadcastNtfyServer";
 const KEY_BROADCAST_NTFY_TOPIC = "broadcastNtfyTopic";
+const KEY_BROADCAST_ALLOW_REPLIES = "broadcastAllowReplies";
 
 export const BROADCAST_PORT_DEFAULT = 7331;
 export const BROADCAST_NTFY_SERVER_DEFAULT = "https://ntfy.sh";
@@ -218,6 +220,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   broadcastNtfyEnabled: false,
   broadcastNtfyServer: BROADCAST_NTFY_SERVER_DEFAULT,
   broadcastNtfyTopic: "",
+  // Read-only by default: a link that can type into a coding agent can run
+  // commands on this machine, so turning it on has to be a deliberate act.
+  broadcastAllowReplies: false,
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -368,6 +373,9 @@ export async function loadPreferences(): Promise<Preferences> {
     broadcastNtfyTopic:
       get<string>(KEY_BROADCAST_NTFY_TOPIC) ??
       DEFAULT_PREFERENCES.broadcastNtfyTopic,
+    broadcastAllowReplies:
+      get<boolean>(KEY_BROADCAST_ALLOW_REPLIES) ??
+      DEFAULT_PREFERENCES.broadcastAllowReplies,
   };
 }
 
@@ -593,6 +601,10 @@ export async function setBroadcastNtfyTopic(value: string): Promise<void> {
   await writePref(KEY_BROADCAST_NTFY_TOPIC, value.trim());
 }
 
+export async function setBroadcastAllowReplies(value: boolean): Promise<void> {
+  await writePref(KEY_BROADCAST_ALLOW_REPLIES, value);
+}
+
 export async function setShortcuts(
   value: Record<ShortcutId, KeyBinding[]> | {},
 ): Promise<void> {
@@ -656,6 +668,7 @@ export async function onPreferencesChange(
     [KEY_BROADCAST_NTFY_ENABLED]: "broadcastNtfyEnabled",
     [KEY_BROADCAST_NTFY_SERVER]: "broadcastNtfyServer",
     [KEY_BROADCAST_NTFY_TOPIC]: "broadcastNtfyTopic",
+    [KEY_BROADCAST_ALLOW_REPLIES]: "broadcastAllowReplies",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().

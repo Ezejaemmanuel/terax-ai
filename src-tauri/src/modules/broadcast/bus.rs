@@ -128,6 +128,35 @@ pub fn snapshot() -> Vec<Event> {
         .collect()
 }
 
+/// What the reply route needs to know about a live pty: which one to write to,
+/// which agent is driving it, and what that agent was last doing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveSession {
+    pub pty_id: u32,
+    pub agent: String,
+    pub kind: String,
+}
+
+/// Resolve the viewer's composite session id (`<agent>:<session>`) back to the
+/// pty currently running it. Only live ptys are in the snapshot, so a `None`
+/// here means "that transcript exists on disk but nothing is running it" —
+/// exactly the case a reply must refuse rather than guess at.
+pub fn find_live(composite: &str) -> Option<LiveSession> {
+    let (agent, session) = composite.split_once(':')?;
+    snapshot_map()
+        .lock()
+        .expect("snapshot poisoned")
+        .iter()
+        .find(|(_, e)| {
+            e.agent.as_deref() == Some(agent) && e.session.as_deref() == Some(session)
+        })
+        .map(|(&pty_id, e)| LiveSession {
+            pty_id,
+            agent: agent.to_string(),
+            kind: e.kind.clone(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +229,17 @@ mod tests {
             session: Some("s1".into()),
         });
 
+        // The composite id the viewer uses resolves back to that pty.
+        assert_eq!(
+            find_live("claude:s1").expect("live"),
+            LiveSession { pty_id: 99, agent: "claude".into(), kind: "attention".into() }
+        );
+        // A session id that belongs to a different agent must not match, or a
+        // reply could be typed into somebody else's terminal.
+        assert!(find_live("codex:s1").is_none());
+        assert!(find_live("claude:nope").is_none());
+        assert!(find_live("malformed").is_none());
+
         // ...and exit drops the pty from the snapshot entirely.
         publish(Event::AgentStatus {
             pty_id: 99,
@@ -208,6 +248,7 @@ mod tests {
             session: None,
         });
         assert!(snapshot().is_empty());
+        assert!(find_live("claude:s1").is_none(), "a dead pty is not repliable");
 
         disable();
     }

@@ -1,19 +1,20 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
 use super::bus::{self, Event};
 use super::model::{find_session, ProjectMeta};
+use super::reply;
 use super::token;
 use crate::modules::transcript::{reader, Format};
 
@@ -22,8 +23,12 @@ use crate::modules::transcript::{reader, Format};
 const MAX_STREAMS: usize = 8;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+/// Floor between accepted replies. A person types one message at a time; this
+/// only bites on a stuck retry loop or a script, which is the point.
+const MIN_REPLY_INTERVAL: Duration = Duration::from_millis(750);
 
 static ACTIVE_STREAMS: AtomicUsize = AtomicUsize::new(0);
+static LAST_REPLY: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub struct Asset {
     pub bytes: Vec<u8>,
@@ -34,18 +39,33 @@ pub struct Asset {
 /// stale caches after a session is created or deleted.
 pub type IndexFn = Arc<dyn Fn() -> Vec<ProjectMeta> + Send + Sync>;
 pub type AssetFn = Arc<dyn Fn(&str) -> Option<Asset> + Send + Sync>;
+/// Writes bytes to a live pty's stdin. Owned data because the write happens on
+/// a blocking worker, off the request task.
+pub type WriteFn = Arc<dyn Fn(u32, Vec<u8>) -> Result<(), String> + Send + Sync>;
+/// Resolves a composite session id to the pty running it, if any. Injected
+/// rather than calling the bus directly so this module stays independent of
+/// process-wide state — the same reason `index` and `assets` are closures.
+pub type LiveFn = Arc<dyn Fn(&str) -> Option<bus::LiveSession> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub token: Arc<String>,
     pub index: IndexFn,
     pub assets: AssetFn,
+    pub write: WriteFn,
+    pub live: LiveFn,
+    /// Off unless the user turned replies on for this broadcast. The mirror is
+    /// read-only by default because a token that can type into a coding agent
+    /// is a token that can run commands on this machine.
+    pub allow_replies: bool,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/sessions", get(sessions))
         .route("/api/sessions/{id}", get(transcript))
+        .route("/api/sessions/{id}/reply", post(reply_to_session))
+        .route("/api/config", get(config))
         .route("/events", get(events))
         .fallback(static_asset)
         .layer(axum::middleware::from_fn_with_state(
@@ -75,12 +95,33 @@ async fn auth_guard(
         .map(str::to_string);
     let query = req.uri().query().map(str::to_string);
 
-    let ok = token::extract(header.as_deref(), query.as_deref())
-        .map(|t| token::matches(&state.token, &t))
-        .unwrap_or(false);
+    // Anything that can change state is held to a stricter standard than a
+    // read. The query token is unavoidable for reads — a QR code has to carry
+    // it and EventSource cannot set headers — but that means it also leaks into
+    // link previews, screenshots and history. A write must present it as a
+    // header, which no drive-by navigation, <img> or plain form can do.
+    let write = req.method() != Method::GET;
+    let ok = if write {
+        token::extract(header.as_deref(), None)
+            .map(|t| token::matches(&state.token, &t))
+            .unwrap_or(false)
+    } else {
+        token::extract(header.as_deref(), query.as_deref())
+            .map(|t| token::matches(&state.token, &t))
+            .unwrap_or(false)
+    };
 
     if !ok {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+
+    // The server is bound on 0.0.0.0 with no TLS, so DNS rebinding is the
+    // realistic attack: a page on attacker.example resolves to this LAN address
+    // and then talks to us with the browser's blessing. The token alone does
+    // not stop that — but such a request necessarily carries the attacker's own
+    // name in Host and Origin, and ours never does.
+    if write && !addressed_directly(req.headers()) {
+        return (StatusCode::FORBIDDEN, "unrecognized host").into_response();
     }
     let mut res = next.run(req).await;
     let h = res.headers_mut();
@@ -103,6 +144,162 @@ fn is_public_asset(path: &str) -> bool {
         ext,
         "js" | "mjs" | "css" | "map" | "png" | "svg" | "webp" | "woff2" | "ico" | "jpg" | "jpeg" | "gif"
     )
+}
+
+/// True when the request names this server by address rather than by some
+/// domain that merely resolves to it. Our own page is loaded from the LAN IP in
+/// the QR link (or localhost), so both headers are always literals; a rebound
+/// domain cannot forge either without giving itself away.
+fn addressed_directly(headers: &HeaderMap) -> bool {
+    let host_ok = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(is_address_literal)
+        // No Host at all is an HTTP/1.1 protocol error; refuse rather than guess.
+        .unwrap_or(false);
+
+    // Absent Origin means a non-browser client (curl, a native app), which
+    // rebinding does not apply to. Present means a browser told us where the
+    // calling page came from, and that has to be us.
+    let origin_ok = match headers.get(axum::http::header::ORIGIN) {
+        None => true,
+        Some(v) => v
+            .to_str()
+            .ok()
+            .and_then(|o| o.split_once("://"))
+            .map(|(_, host)| is_address_literal(host))
+            .unwrap_or(false),
+    };
+
+    host_ok && origin_ok
+}
+
+/// `host[:port]` where host is an IP literal or localhost.
+fn is_address_literal(host: &str) -> bool {
+    let host = host.trim();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // IPv6 literals are bracketed, and contain the colons that would
+        // otherwise confuse the port split.
+        match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    name == "localhost" || name.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// What this broadcast will let a viewer do. The client asks once at startup so
+/// it can show or hide its composer instead of discovering the answer by
+/// getting a reply rejected.
+async fn config(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "reply": {
+            "enabled": state.allow_replies,
+            "agents": reply::REPLYABLE_AGENTS,
+            "maxLength": reply::MAX_LEN,
+        }
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplyBody {
+    text: String,
+    /// Send even though the agent is mid-turn, accepting that it queues.
+    #[serde(default)]
+    force: bool,
+}
+
+fn reply_error(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({ "error": message }))).into_response()
+}
+
+/// Type a viewer's message into the terminal running this session.
+///
+/// Every refusal below is load-bearing: the session must be live (not just a
+/// transcript on disk), driven by an agent whose submit semantics are known,
+/// and sitting at a prompt — or the sender must have said explicitly that
+/// queueing is fine.
+async fn reply_to_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReplyBody>,
+) -> Response {
+    if !state.allow_replies {
+        return reply_error(StatusCode::FORBIDDEN, "replies are turned off for this broadcast");
+    }
+
+    let Some(live) = (state.live)(id.as_str()) else {
+        return reply_error(
+            StatusCode::CONFLICT,
+            "that session is not open in a terminal right now",
+        );
+    };
+
+    if !reply::REPLYABLE_AGENTS.contains(&live.agent.as_str()) {
+        return reply_error(
+            StatusCode::BAD_REQUEST,
+            &format!("replying to {} is not supported yet", live.agent),
+        );
+    }
+
+    if !reply::accepts(&live.kind, body.force) {
+        let (status, message) = if reply::is_busy(&live.kind) {
+            (StatusCode::CONFLICT, "the agent is still working")
+        } else {
+            (StatusCode::CONFLICT, "that terminal is not accepting input")
+        };
+        return (
+            status,
+            Json(json!({ "error": message, "busy": reply::is_busy(&live.kind) })),
+        )
+            .into_response();
+    }
+
+    let keys = match reply::encode(&body.text) {
+        Ok(k) => k,
+        Err(e) => return reply_error(StatusCode::BAD_REQUEST, &e.message()),
+    };
+
+    {
+        let mut last = LAST_REPLY.lock().expect("reply clock poisoned");
+        let now = Instant::now();
+        let too_soon = matches!(*last, Some(prev) if now.duration_since(prev) < MIN_REPLY_INTERVAL);
+        if too_soon {
+            return reply_error(StatusCode::TOO_MANY_REQUESTS, "slow down");
+        }
+        *last = Some(now);
+    }
+
+    // Off the async worker: the pty writer is a blocking pipe behind a std
+    // mutex, and a stalled child must not park a runtime thread.
+    let write = state.write.clone();
+    let pty_id = live.pty_id;
+    let sent = tokio::task::spawn_blocking(move || {
+        write(pty_id, keys.paste)?;
+        write(pty_id, keys.submit)
+    })
+    .await;
+
+    match sent {
+        Ok(Ok(())) => {
+            log::info!(
+                "[broadcast] reply typed into pty {pty_id} ({} chars, session {id})",
+                body.text.chars().count()
+            );
+            Json(json!({ "ok": true })).into_response()
+        }
+        Ok(Err(e)) => {
+            log::warn!("[broadcast] reply write failed for pty {pty_id}: {e}");
+            reply_error(StatusCode::CONFLICT, "that terminal is no longer accepting input")
+        }
+        Err(e) => {
+            log::error!("[broadcast] reply task panicked: {e}");
+            reply_error(StatusCode::INTERNAL_SERVER_ERROR, "reply failed")
+        }
+    }
 }
 
 async fn sessions(State(state): State<AppState>) -> Json<Vec<ProjectMeta>> {
@@ -374,6 +571,25 @@ mod tests {
         })
     }
 
+    /// Captures what would have been typed, so tests assert on the exact bytes
+    /// the pty would receive.
+    #[derive(Clone, Default)]
+    struct Typed(Arc<Mutex<Vec<Vec<u8>>>>);
+
+    impl Typed {
+        fn write_fn(&self) -> WriteFn {
+            let sink = self.0.clone();
+            Arc::new(move |_id, data| {
+                sink.lock().expect("sink").push(data);
+                Ok(())
+            })
+        }
+
+        fn joined(&self) -> Vec<u8> {
+            self.0.lock().expect("sink").concat()
+        }
+    }
+
     fn state_with(path: Option<PathBuf>) -> AppState {
         let session = SessionMeta {
             id: "s1".into(),
@@ -394,6 +610,9 @@ mod tests {
             token: Arc::new("secret".into()),
             index: Arc::new(move || projects.clone()),
             assets: asset_fn(),
+            write: Arc::new(|_, _| Ok(())),
+            live: Arc::new(|_| None),
+            allow_replies: false,
         }
     }
 
@@ -498,19 +717,190 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
+    /// The reply endpoint is the *only* way in. Everything else stays the
+    /// read-only mirror it was designed as.
     #[tokio::test]
-    async fn there_is_no_write_route() {
-        let res = router(state_with(None))
+    async fn reply_is_the_only_write_route() {
+        for uri in ["/api/sessions", "/api/sessions/s1", "/events"] {
+            let res = router(state_with(None))
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("authorization", "Bearer secret")
+                        .header("host", "127.0.0.1:7331")
+                        .body(Body::empty())
+                        .expect("req"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED, "{uri} took a write");
+        }
+    }
+
+    /// A state where `claude:live` is running in a pty in the given state, with
+    /// replies enabled.
+    fn repliable(kind: &'static str) -> (AppState, Typed) {
+        let typed = Typed::default();
+        let mut state = state_with(None);
+        state.write = typed.write_fn();
+        state.allow_replies = true;
+        state.live = Arc::new(move |id| {
+            (id == "claude:live").then(|| bus::LiveSession {
+                pty_id: 7,
+                agent: "claude".into(),
+                kind: kind.into(),
+            })
+        });
+        (state, typed)
+    }
+
+    async fn post_reply(state: AppState, body: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions/claude:live/reply")
+            .header("content-type", "application/json");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let res = router(state)
+            .oneshot(req.body(Body::from(body.to_string())).expect("req"))
+            .await
+            .expect("response");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.expect("body");
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    const GOOD: &[(&str, &str)] = &[
+        ("authorization", "Bearer secret"),
+        ("host", "192.168.1.5:7331"),
+        ("origin", "http://192.168.1.5:7331"),
+    ];
+
+    // The rate-limit clock is process-wide, so the reply cases run as one test
+    // to stay deterministic under the parallel harness.
+    #[tokio::test]
+    async fn reply_route_end_to_end() {
+        // Disabled by default: the token alone must not be enough to type.
+        let (mut off, typed) = repliable("attention");
+        off.allow_replies = false;
+        let (status, _) = post_reply(off, r#"{"text":"hi"}"#, GOOD).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(typed.joined().is_empty());
+
+        // A write may not authenticate by query string, only by header.
+        let (state, _) = repliable("attention");
+        let res = router(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/sessions?t=secret")
-                    .body(Body::empty())
+                    .uri("/api/sessions/claude:live/reply?t=secret")
+                    .header("content-type", "application/json")
+                    .header("host", "192.168.1.5:7331")
+                    .body(Body::from(r#"{"text":"hi"}"#))
                     .expect("req"),
             )
             .await
             .expect("response");
-        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // A rebound domain carries its own name in Host/Origin.
+        let (state, _) = repliable("attention");
+        let (status, _) = post_reply(
+            state,
+            r#"{"text":"hi"}"#,
+            &[("authorization", "Bearer secret"), ("host", "evil.example.com")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (state, _) = repliable("attention");
+        let (status, _) = post_reply(
+            state,
+            r#"{"text":"hi"}"#,
+            &[
+                ("authorization", "Bearer secret"),
+                ("host", "192.168.1.5:7331"),
+                ("origin", "http://evil.example.com"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // The happy path types a bracketed paste and a separate submit.
+        *LAST_REPLY.lock().expect("clock") = None;
+        let (state, typed) = repliable("attention");
+        let (status, body) = post_reply(state, r#"{"text":"do the thing"}"#, GOOD).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(typed.joined(), b"\x1b[200~do the thing\x1b[201~\r".to_vec());
+
+        // Back-to-back sends are rate limited.
+        let (state, typed) = repliable("attention");
+        let (status, _) = post_reply(state, r#"{"text":"again"}"#, GOOD).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(typed.joined().is_empty());
+        *LAST_REPLY.lock().expect("clock") = None;
+
+        // Empty bodies never reach the terminal.
+        let (state, typed) = repliable("attention");
+        let (status, _) = post_reply(state, r#"{"text":"   "}"#, GOOD).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(typed.joined().is_empty());
+
+        // A working agent needs force, and says so.
+        let (state, typed) = repliable("working");
+        let (status, body) = post_reply(state, r#"{"text":"stop"}"#, GOOD).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body.contains("\"busy\":true"), "{body}");
+        assert!(typed.joined().is_empty());
+
+        let (state, typed) = repliable("working");
+        let (status, _) = post_reply(state, r#"{"text":"stop","force":true}"#, GOOD).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(typed.joined(), b"\x1b[200~stop\x1b[201~\r".to_vec());
+        *LAST_REPLY.lock().expect("clock") = None;
+
+        // An agent that is not claude is refused until its submit semantics
+        // have actually been checked.
+        let (mut state, typed) = repliable("attention");
+        state.live = Arc::new(|_| {
+            Some(bus::LiveSession { pty_id: 7, agent: "codex".into(), kind: "attention".into() })
+        });
+        let (status, _) = post_reply(state, r#"{"text":"hi"}"#, GOOD).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(typed.joined().is_empty());
+
+        // A session with no live pty is refused outright.
+        let (mut state, typed) = repliable("attention");
+        state.live = Arc::new(|_| None);
+        let (status, _) = post_reply(state, r#"{"text":"hi"}"#, GOOD).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(typed.joined().is_empty());
+    }
+
+    #[test]
+    fn only_literal_addresses_are_accepted() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:7331",
+            "192.168.1.5:7331",
+            "localhost:7331",
+            "[::1]:7331",
+        ] {
+            assert!(is_address_literal(host), "{host} should pass");
+        }
+        for host in ["evil.example.com", "evil.example.com:7331", "", "[::1"] {
+            assert!(!is_address_literal(host), "{host} should fail");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_advertises_whether_replies_are_on() {
+        let (status, body) = get(state_with(None), "/api/config?t=secret").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"enabled\":false"));
+        assert!(body.contains("claude"));
     }
 
     #[tokio::test]

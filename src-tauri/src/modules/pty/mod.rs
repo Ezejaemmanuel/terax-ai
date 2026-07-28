@@ -73,6 +73,13 @@ pub async fn pty_open(
 
 #[tauri::command]
 pub fn pty_write(state: tauri::State<PtyState>, id: u32, data: String) -> Result<(), String> {
+    write_to(&state, id, data.as_bytes())
+}
+
+/// Deliver bytes to a live pty's stdin by id. Separate from the command so
+/// non-IPC callers — the broadcast reply route sends remote input this way —
+/// reach the same writer under the same locking discipline.
+pub fn write_to(state: &PtyState, id: u32, data: &[u8]) -> Result<(), String> {
     let session = state
         .sessions
         .read()
@@ -87,7 +94,7 @@ pub fn pty_write(state: tauri::State<PtyState>, id: u32, data: String) -> Result
     // see rustc note on tail-expression temporary drop order.
     let result = {
         let mut writer = session.writer.lock().unwrap();
-        write_input(&mut *writer, data.as_bytes()).map_err(|e| {
+        write_input(&mut *writer, data).map_err(|e| {
             // EPIPE is expected if the child already exited.
             log::debug!("pty_write id={id} failed: {e}");
             e.to_string()

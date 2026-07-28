@@ -52,6 +52,16 @@ export type AgentStatus =
   | "finished"
   | "exited";
 
+/// What this broadcast permits, fetched once at startup so the viewer can shape
+/// itself instead of finding out by having a send rejected.
+export interface RemoteConfig {
+  reply: {
+    enabled: boolean;
+    agents: AgentId[];
+    maxLength: number;
+  };
+}
+
 export interface StatusEvent {
   ptyId: number;
   kind: AgentStatus | "session";

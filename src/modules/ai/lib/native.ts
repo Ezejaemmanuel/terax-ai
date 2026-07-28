@@ -81,6 +81,12 @@ export type GitDiffContentResult = {
   truncated: boolean;
 };
 
+export type GitBaselineResult = {
+  /** `null` when the baseline blob is binary and the gutter must stay off. */
+  content: string | null;
+  isBinary: boolean;
+};
+
 export type GitCommitResult = {
   commitSha: string;
   summary: string;
@@ -124,6 +130,33 @@ export type GitDiscardEntry = {
   path: string;
   untracked: boolean;
 };
+
+export type LspServerState = "starting" | "ready" | "failed" | "stopped";
+
+export type LspStatus = {
+  root: string;
+  state: LspServerState;
+  exe: string | null;
+  error: string | null;
+  openDocuments: number;
+};
+
+/** Zero-based positions, as the language server reports them. */
+export type LspDiagnostic = {
+  startLine: number;
+  startCharacter: number;
+  endLine: number;
+  endCharacter: number;
+  /** 1 error, 2 warning, 3 information, 4 hint. */
+  severity: number;
+  code: string | null;
+  source: string | null;
+  message: string;
+};
+
+export type LspLocation = { path: string; line: number; character: number };
+
+export type LspFileProblems = { path: string; diagnostics: LspDiagnostic[] };
 
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
@@ -282,6 +315,66 @@ export const native = {
       path,
       staged,
       originalPath: originalPath ?? null,
+      workspace: currentWorkspaceEnv(),
+    }),
+  gitQuickDiffBaseline: (repoRoot: string, path: string) =>
+    invoke<GitBaselineResult>("git_quick_diff_baseline", {
+      repoRoot,
+      path,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspStart: (root: string) =>
+    invoke<LspStatus>("lsp_start", { root, workspace: currentWorkspaceEnv() }),
+  lspStop: (root: string) => invoke<void>("lsp_stop", { root }),
+  lspStopAll: () => invoke<void>("lsp_stop_all"),
+  lspStatuses: () => invoke<LspStatus[]>("lsp_statuses"),
+  lspDidOpen: (root: string, path: string, text: string, languageId: string) =>
+    invoke<void>("lsp_did_open", {
+      root,
+      path,
+      text,
+      languageId,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspDidChange: (root: string, path: string, text: string, languageId: string) =>
+    invoke<void>("lsp_did_change", {
+      root,
+      path,
+      text,
+      languageId,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspDidClose: (root: string, path: string) =>
+    invoke<void>("lsp_did_close", {
+      root,
+      path,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspDiagnostics: (root: string, path: string) =>
+    invoke<LspDiagnostic[]>("lsp_diagnostics", {
+      root,
+      path,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspDefinition: (root: string, path: string, line: number, character: number) =>
+    invoke<LspLocation | null>("lsp_definition", {
+      root,
+      path,
+      line,
+      character,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspHover: (root: string, path: string, line: number, character: number) =>
+    invoke<string | null>("lsp_hover", {
+      root,
+      path,
+      line,
+      character,
+      workspace: currentWorkspaceEnv(),
+    }),
+  lspProjectCheck: (root: string) =>
+    invoke<LspFileProblems[]>("lsp_project_check", {
+      root,
       workspace: currentWorkspaceEnv(),
     }),
   gitStage: (repoRoot: string, paths: string[]) =>

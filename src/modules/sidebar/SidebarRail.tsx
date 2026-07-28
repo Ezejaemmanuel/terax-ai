@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import {
+  Alert02Icon,
   ChatGptIcon,
   ClaudeIcon,
   FolderGitTwoIcon,
@@ -25,9 +26,15 @@ type Props = {
   activeView: SidebarViewId;
   onSelectView: (view: SidebarViewId) => void;
   changedCount: number;
+  problemCount: number;
 };
 
-export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
+export function SidebarRail({
+  activeView,
+  onSelectView,
+  changedCount,
+  problemCount,
+}: Props) {
   const items: RailItem[] = [
     { id: "explorer", label: "Files", icon: FolderTreeIcon },
     {
@@ -35,6 +42,12 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
       label: "Source Control",
       icon: FolderGitTwoIcon,
       badge: changedCount,
+    },
+    {
+      id: "problems",
+      label: "Problems",
+      icon: Alert02Icon,
+      badge: problemCount,
     },
     { id: "claude-history", label: "Claude", icon: ClaudeIcon },
     { id: "command-code-history", label: "Command Code", icon: SourceCodeIcon },

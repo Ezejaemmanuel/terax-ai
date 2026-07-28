@@ -75,6 +75,14 @@ pub struct GitDiffContentResult {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitBaselineResult {
+    /// `None` when the baseline blob is binary and the gutter must stay off.
+    pub content: Option<String>,
+    pub is_binary: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitCommitResult {
     pub commit_sha: String,
     pub summary: String,

@@ -12,6 +12,7 @@ import {
   invalidateRepoDiffs,
   workingDiffKey,
 } from "@/modules/editor/lib/diffCache";
+import { notifyGitHeadChanged } from "@/lib/gitEvents";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SourceControlSummary } from "./useSourceControl";
@@ -972,6 +973,7 @@ export function useSourceControlPanel(
         `Committed ${result.commitSha.slice(0, 7)} ${result.summary}`,
       );
       invalidateRepoDiffs(repo.repoRoot);
+      notifyGitHeadChanged(repo.repoRoot);
       await summary.refresh({ remote: "never" });
     } catch (error) {
       setActionError(normalizeError(error));

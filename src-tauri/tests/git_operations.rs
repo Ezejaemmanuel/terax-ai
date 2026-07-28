@@ -512,3 +512,94 @@ fn unauthorized_path_is_rejected() {
         Ok(_) => panic!("expected error for unauthorized dir"),
     }
 }
+
+#[test]
+fn quick_diff_baseline_uses_head_for_staged_change() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("a.txt", "one\n");
+    fx.run_git(&["add", "a.txt"]);
+    fx.run_git(&["commit", "-q", "-m", "seed"]);
+    fx.write_file("a.txt", "one\ntwo\n");
+    fx.run_git(&["add", "a.txt"]);
+
+    let baseline =
+        operations::quick_diff_baseline(&fx.registry, &fx.repo_str(), "a.txt", &fx.workspace)
+            .expect("baseline");
+    assert!(!baseline.is_binary);
+    assert_eq!(baseline.content.as_deref(), Some("one\n"));
+}
+
+#[test]
+fn quick_diff_baseline_uses_head_for_unstaged_change() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("a.txt", "one\n");
+    fx.run_git(&["add", "a.txt"]);
+    fx.run_git(&["commit", "-q", "-m", "seed"]);
+    fx.write_file("a.txt", "one\ntwo\n");
+
+    let baseline =
+        operations::quick_diff_baseline(&fx.registry, &fx.repo_str(), "a.txt", &fx.workspace)
+            .expect("baseline");
+    assert_eq!(baseline.content.as_deref(), Some("one\n"));
+}
+
+#[test]
+fn quick_diff_baseline_follows_staged_rename_to_origin() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("old.txt", "keep\nkeep\nkeep\nkeep\n");
+    fx.run_git(&["add", "old.txt"]);
+    fx.run_git(&["commit", "-q", "-m", "seed"]);
+    fx.run_git(&["mv", "old.txt", "new.txt"]);
+
+    let baseline =
+        operations::quick_diff_baseline(&fx.registry, &fx.repo_str(), "new.txt", &fx.workspace)
+            .expect("baseline");
+    assert_eq!(
+        baseline.content.as_deref(),
+        Some("keep\nkeep\nkeep\nkeep\n")
+    );
+}
+
+#[test]
+fn quick_diff_baseline_is_empty_for_untracked_file() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("seed.txt", "seed\n");
+    fx.run_git(&["add", "seed.txt"]);
+    fx.run_git(&["commit", "-q", "-m", "seed"]);
+    fx.write_file("fresh.txt", "brand new\n");
+
+    let baseline =
+        operations::quick_diff_baseline(&fx.registry, &fx.repo_str(), "fresh.txt", &fx.workspace)
+            .expect("baseline");
+    assert_eq!(baseline.content.as_deref(), Some(""));
+}
+
+#[test]
+fn quick_diff_baseline_is_empty_for_staged_new_file() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("seed.txt", "seed\n");
+    fx.run_git(&["add", "seed.txt"]);
+    fx.run_git(&["commit", "-q", "-m", "seed"]);
+    fx.write_file("added.txt", "brand new\n");
+    fx.run_git(&["add", "added.txt"]);
+
+    let baseline =
+        operations::quick_diff_baseline(&fx.registry, &fx.repo_str(), "added.txt", &fx.workspace)
+            .expect("baseline");
+    assert_eq!(baseline.content.as_deref(), Some(""));
+}
