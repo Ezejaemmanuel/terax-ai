@@ -94,10 +94,8 @@ fn parse_check_line(line: &str) -> Option<ParsedLine> {
         (1u8, r)
     } else if let Some(r) = rest.strip_prefix("warning ") {
         (2, r)
-    } else if let Some(r) = rest.strip_prefix("message ") {
-        (3, r)
     } else {
-        return None;
+        (3, rest.strip_prefix("message ")?)
     };
 
     let (code, message) = rest.split_once(':')?;

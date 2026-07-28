@@ -481,14 +481,14 @@ fn handle_notification(method: &str, message: &Value, root: &str, app: &AppHandl
             );
         }
         // tsgo logs a line per handled request; only its errors are worth keeping.
-        "window/logMessage" | "window/showMessage" => {
-            if message.pointer("/params/type").and_then(Value::as_u64) == Some(1) {
-                let text = message
-                    .pointer("/params/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                log::warn!("[lsp {root}] {text}");
-            }
+        "window/logMessage" | "window/showMessage"
+            if message.pointer("/params/type").and_then(Value::as_u64) == Some(1) =>
+        {
+            let text = message
+                .pointer("/params/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            log::warn!("[lsp {root}] {text}");
         }
         _ => {}
     }
