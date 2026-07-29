@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { isLspCandidate, languageIdForPath } from "./paths";
-import { normalizeRoot, rootForPathIn, type LspEnablement } from "./store";
+import { CASE_INSENSITIVE_FS } from "@/lib/platform";
+import { isIgnoredPath, isLspCandidate, languageIdForPath } from "./paths";
+import { normalizeRoot, rootForPathIn, sameRoot, type LspEnablement } from "./store";
 import { toCodeMirrorDiagnostics } from "./editorExtension";
 
 describe("normalizeRoot", () => {
@@ -36,6 +37,25 @@ describe("rootForPathIn", () => {
 
   it("returns null when nothing is enabled", () => {
     expect(rootForPathIn({}, "C:/work/app/src/a.ts")).toBeNull();
+  });
+
+  it("matches a differently cased path only where the filesystem agrees", () => {
+    const found = rootForPathIn(enabled, "c:/WORK/app/src/a.ts");
+    expect(found).toBe(CASE_INSENSITIVE_FS ? "C:/work/app" : null);
+    expect(sameRoot("C:/work/app", "c:/WORK/app")).toBe(CASE_INSENSITIVE_FS);
+  });
+});
+
+describe("isLspCandidate", () => {
+  it("skips dependencies and build output", () => {
+    expect(isLspCandidate("C:/work/app/node_modules/react/index.js")).toBe(false);
+    expect(isLspCandidate("C:/work/app/dist/main.js")).toBe(false);
+    expect(isIgnoredPath("C:\\work\\app\\.next\\page.ts")).toBe(true);
+  });
+
+  it("does not treat a prefix as an ignored segment", () => {
+    expect(isLspCandidate("C:/work/app/dist-tools/main.ts")).toBe(true);
+    expect(isLspCandidate("C:/work/app/src/build.ts")).toBe(true);
   });
 });
 

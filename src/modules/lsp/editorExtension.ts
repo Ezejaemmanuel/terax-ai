@@ -4,6 +4,7 @@ import { EditorView, ViewPlugin, hoverTooltip, type ViewUpdate } from "@codemirr
 import { listen } from "@tauri-apps/api/event";
 import { native, type LspDiagnostic } from "@/modules/ai/lib/native";
 import { requestOpenFile } from "@/lib/openFileRequests";
+import { lspWarn } from "./log";
 import { languageIdForPath } from "./paths";
 import { normalizeRoot, recordFileProblems } from "./store";
 
@@ -65,9 +66,11 @@ async function pullDiagnostics(view: EditorView, context: LspContext): Promise<v
     if (context.getPath() !== path) return;
     recordFileProblems(root, path, diagnostics);
     view.dispatch(setDiagnostics(view.state, toCodeMirrorDiagnostics(view.state, diagnostics)));
-  } catch {
+  } catch (error) {
     // A server that died or a file it does not own: leave the last marks be
-    // rather than flashing the gutter empty.
+    // rather than flashing the gutter empty, but say why in the log so an
+    // editor that never underlines anything can be explained.
+    lspWarn(`diagnostics for ${path} failed:`, error);
   }
 }
 
@@ -113,7 +116,8 @@ export function lspExtension(context: LspContext): Extension {
         if (!root || !languageId) return;
         try {
           await native.lspDidChange(root, path, this.view.state.doc.toString(), languageId);
-        } catch {
+        } catch (error) {
+          lspWarn(`didChange for ${path} failed:`, error);
           return;
         }
         if (context.getPath() !== path) return;
@@ -142,14 +146,19 @@ export function lspExtension(context: LspContext): Extension {
       void native
         .lspDefinition(root, path, line, character)
         .then((location) => {
-          if (!location) return;
+          if (!location) {
+            lspWarn(`no definition at ${path}:${line + 1}:${character + 1}`);
+            return;
+          }
           requestOpenFile({
             path: location.path,
             line: location.line + 1,
             column: location.character + 1,
           });
         })
-        .catch(() => {});
+        .catch((error: unknown) => {
+          lspWarn(`definition for ${path} failed:`, error);
+        });
       return true;
     },
   });
@@ -159,7 +168,12 @@ export function lspExtension(context: LspContext): Extension {
     if (!root) return null;
     const path = context.getPath();
     const { line, character } = toPosition(view.state, pos);
-    const text = await native.lspHover(root, path, line, character).catch(() => null);
+    const text = await native
+      .lspHover(root, path, line, character)
+      .catch((error: unknown) => {
+        lspWarn(`hover for ${path} failed:`, error);
+        return null;
+      });
     if (!text || context.getPath() !== path) return null;
     return {
       pos,

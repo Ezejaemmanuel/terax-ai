@@ -98,11 +98,25 @@ function ProjectProblems({ root, name }: { root: string; name: string }) {
         </button>
       </div>
 
+      {/* The reason a project has no diagnostics is usually a server that never
+          started, so it is stated in full rather than hidden in a tooltip. */}
       {status?.state === "failed" && status.error && (
-        <div className="px-2 pb-1 text-[10px] text-destructive">{status.error}</div>
+        <div className="mx-2 mb-1 select-text rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10px] leading-relaxed text-destructive">
+          {status.error}
+        </div>
       )}
       {checkError && (
-        <div className="px-2 pb-1 text-[10px] text-destructive">{checkError}</div>
+        <div className="mx-2 mb-1 select-text rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10px] leading-relaxed text-destructive">
+          {checkError}
+        </div>
+      )}
+      {status?.state === "ready" && status.exe && (
+        <div
+          className="truncate px-2 pb-1 text-[10px] text-muted-foreground/50"
+          title={status.exe}
+        >
+          {status.exe}
+        </div>
       )}
 
       {sorted.map((file) => (

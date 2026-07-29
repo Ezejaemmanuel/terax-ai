@@ -1,4 +1,5 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
+import { toast } from "sonner";
 import { create } from "zustand";
 import {
   native,
@@ -6,6 +7,8 @@ import {
   type LspFileProblems,
   type LspStatus,
 } from "@/modules/ai/lib/native";
+import { CASE_INSENSITIVE_FS } from "@/lib/platform";
+import { lspError, lspInfo, lspWarn } from "./log";
 
 const store = new LazyStore("terax-lsp.json", { defaults: {}, autoSave: 200 });
 const PERSIST_KEY = "persistentRoots";
@@ -20,6 +23,26 @@ export type LspEnablement = "off" | "session" | "persistent";
 export function normalizeRoot(root: string): string {
   const forward = root.replace(/\\/g, "/");
   return forward.length > 1 ? forward.replace(/\/+$/, "") : forward;
+}
+
+/**
+ * The backend reports the canonical spelling of a path, which on Windows and
+ * macOS can differ in case from the one the UI enabled. Comparing the two
+ * verbatim made a running server look stopped, so comparisons fold case
+ * wherever the filesystem does.
+ */
+function foldRoot(root: string): string {
+  return CASE_INSENSITIVE_FS ? root.toLowerCase() : root;
+}
+
+export function sameRoot(a: string, b: string): boolean {
+  return foldRoot(a) === foldRoot(b);
+}
+
+function withinRoot(target: string, root: string): boolean {
+  const t = foldRoot(target);
+  const r = foldRoot(root);
+  return t === r || t.startsWith(`${r}/`);
 }
 
 type State = {
@@ -104,7 +127,19 @@ export const useLspStore = create<State & Actions>((set, get) => ({
     try {
       const status = await native.lspStart(key);
       set((s) => ({ status: { ...s.status, [key]: status } }));
+      if (status.state === "failed") {
+        lspWarn(`enable ${key} failed:`, status.error ?? "unknown");
+        toast.error("TypeScript server did not start", {
+          description: status.error ?? "The project reported no reason.",
+        });
+        return;
+      }
+      lspInfo(`enabled ${key} (${mode}) using ${status.exe ?? "unknown"}`);
     } catch (error) {
+      // A rejected command is the one failure the status can never carry, so it
+      // has to be written in by hand or the project would sit on "starting".
+      lspError(`enable ${key} failed:`, error);
+      toast.error("TypeScript server did not start", { description: String(error) });
       set((s) => ({
         status: {
           ...s.status,
@@ -134,7 +169,10 @@ export const useLspStore = create<State & Actions>((set, get) => ({
     const roots = await readPersisted();
     const remaining = roots.filter((r) => normalizeRoot(r) !== key);
     if (remaining.length !== roots.length) await writePersisted(remaining);
-    await native.lspStop(key).catch(() => {});
+    lspInfo(`disabled ${key}`);
+    await native.lspStop(key).catch((error: unknown) => {
+      lspWarn(`stop ${key} failed:`, error);
+    });
   },
 
   stopServer: async (root) => {
@@ -147,13 +185,19 @@ export const useLspStore = create<State & Actions>((set, get) => ({
       delete problems[key];
       return { status, problems };
     });
-    await native.lspStop(key).catch(() => {});
+    lspInfo(`stopped server for ${key}, still enabled`);
+    await native.lspStop(key).catch((error: unknown) => {
+      lspWarn(`stop ${key} failed:`, error);
+    });
   },
 
   refreshStatus: async (root) => {
     const key = normalizeRoot(root);
-    const statuses = await native.lspStatuses().catch(() => []);
-    const found = statuses.find((s) => normalizeRoot(s.root) === key);
+    const statuses = await native.lspStatuses().catch((error: unknown) => {
+      lspWarn("statuses failed:", error);
+      return [] as LspStatus[];
+    });
+    const found = statuses.find((s) => sameRoot(normalizeRoot(s.root), key));
     if (found) set((s) => ({ status: { ...s.status, [key]: found } }));
   },
 
@@ -167,7 +211,7 @@ export const useLspStore = create<State & Actions>((set, get) => ({
       const key = normalizeRoot(root);
       const file = normalizeRoot(path);
       const existing = s.problems[key] ?? [];
-      const rest = existing.filter((entry) => normalizeRoot(entry.path) !== file);
+      const rest = existing.filter((entry) => !sameRoot(normalizeRoot(entry.path), file));
       const next =
         diagnostics.length === 0 ? rest : [...rest, { path: file, diagnostics }];
       // Referential equality matters here: this runs on every keystroke pause,
@@ -192,6 +236,8 @@ export const useLspStore = create<State & Actions>((set, get) => ({
         checking: { ...s.checking, [key]: false },
       }));
     } catch (error) {
+      lspError(`project check ${key} failed:`, error);
+      toast.error("Project check failed", { description: String(error) });
       set((s) => ({
         checking: { ...s.checking, [key]: false },
         checkError: { ...s.checkError, [key]: String(error) },
@@ -225,7 +271,7 @@ export function rootForPathIn(
   const target = normalizeRoot(path);
   let best: string | null = null;
   for (const root of Object.keys(enabled)) {
-    if (target === root || target.startsWith(`${root}/`)) {
+    if (withinRoot(target, root)) {
       if (!best || root.length > best.length) best = root;
     }
   }

@@ -1,8 +1,9 @@
 // The editor extension is deliberately absent here: it is imported lazily so a
 // window that never enables a project never loads it.
-export { isLspCandidate, languageIdForPath } from "./paths";
+export { isIgnoredPath, isLspCandidate, languageIdForPath } from "./paths";
 export {
   lspEnablement,
+  sameRoot,
   lspRootForPath,
   normalizeRoot,
   recordFileProblems,

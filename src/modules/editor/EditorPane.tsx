@@ -35,6 +35,7 @@ import {
   rootForPathIn,
   useLspStore,
 } from "@/modules/lsp";
+import { lspWarn } from "@/modules/lsp/log";
 import { gitGutter, setGitBaseline } from "./lib/gitGutter";
 import { native, type GitRepoInfo } from "@/modules/ai/lib/native";
 import { onGitHeadChanged } from "@/lib/gitEvents";
@@ -376,11 +377,17 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       if (!languageId) return;
       const target = path;
       let cancelled = false;
+      let opened = false;
 
       void (async () => {
         try {
           await native.lspDidOpen(lspRoot, target, liveContentRef.current, languageId);
+          opened = true;
         } catch (error) {
+          // The extension is still attached below: a failed open usually means
+          // a server that never started, and the later requests are what put
+          // the reason in the log instead of leaving the editor mutely inert.
+          lspWarn(`didOpen ${target} failed:`, error);
           useLspStore.getState().setStatus({
             root: lspRoot,
             state: "failed",
@@ -388,7 +395,6 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
             error: String(error),
             openDocuments: 0,
           });
-          return;
         }
         if (cancelled) return;
         // A remembered project starts its server on this first open, so the
@@ -415,7 +421,10 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
           view.dispatch(setDiagnostics(view.state, []));
           view.dispatch({ effects: lspCompartment.reconfigure([]) });
         }
-        void native.lspDidClose(lspRoot, target).catch(() => {});
+        if (!opened) return;
+        void native.lspDidClose(lspRoot, target).catch((error: unknown) => {
+          lspWarn(`didClose ${target} failed:`, error);
+        });
       };
     }, [path, doc.status, lspRoot]);
 

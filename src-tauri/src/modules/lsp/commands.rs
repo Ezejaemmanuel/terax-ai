@@ -75,7 +75,12 @@ pub async fn lsp_start(
         let key = crate::modules::fs::to_canon(&root);
         match lsp.ensure(&root, app) {
             Ok(_) => Ok(lsp.status(&key)),
-            Err(error) => Ok(LspStatus::failed(&key, error)),
+            // Reported as a status rather than a command error: the UI shows it
+            // on the project instead of losing it in a rejected promise.
+            Err(error) => {
+                log::warn!("[lsp {key}] enable failed: {error}");
+                Ok(LspStatus::failed(&key, error))
+            }
         }
     })
     .await
@@ -84,7 +89,13 @@ pub async fn lsp_start(
 #[tauri::command]
 pub async fn lsp_stop(root: String, app: AppHandle) -> Result<(), String> {
     blocking(app, move |_, lsp, _| {
-        lsp.stop(&root);
+        // Servers are registered under the canonical path, so stopping on the
+        // caller's spelling would leave the process running. A folder that no
+        // longer exists still has to be stoppable, hence the fallback.
+        let key = std::fs::canonicalize(&root)
+            .map(crate::modules::fs::to_canon)
+            .unwrap_or(root);
+        lsp.stop(&key);
         Ok(())
     })
     .await

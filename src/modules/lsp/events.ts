@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import type { LspDiagnostic } from "@/modules/ai/lib/native";
+import { lspWarn } from "./log";
 import { normalizeRoot, useLspStore } from "./store";
 
 type DiagnosticsEvent = { root: string; path: string; diagnostics: LspDiagnostic[] };
@@ -28,6 +29,7 @@ export function attachLspEvents(): void {
     // Only report a crash for a project the user still wants on; a normal stop
     // already cleared its entry.
     if ((enabled[root] ?? "off") === "off") return;
+    lspWarn(`server for ${root} exited`);
     setStatus({
       root,
       state: "failed",

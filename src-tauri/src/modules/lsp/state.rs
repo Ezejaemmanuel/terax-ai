@@ -20,7 +20,16 @@ pub struct LspState {
 impl LspState {
     pub fn get(&self, root: &str) -> Option<Arc<LspClient>> {
         let servers = self.servers.lock().expect("lsp state poisoned");
-        servers.get(root).cloned()
+        if let Some(client) = servers.get(root) {
+            return Some(Arc::clone(client));
+        }
+        // The caller's spelling can differ from the one the server was
+        // registered under (drive-letter case on Windows), and missing here
+        // would strand the process while the UI reports the project as off.
+        servers
+            .iter()
+            .find(|(key, _)| Self::same_root(key, root))
+            .map(|(_, client)| Arc::clone(client))
     }
 
     /// The running client for `root`, starting one if needed. Holding the lock
@@ -35,23 +44,39 @@ impl LspState {
                 return Ok(Arc::clone(existing));
             }
             // Crashed since last use; replace it rather than hand back a corpse.
+            log::warn!("[lsp {key}] previous server is gone, restarting");
             servers.remove(&key);
         }
 
-        let install = resolve::find_tsgo(root)?;
+        let install = resolve::find_tsgo(root).inspect_err(|e| {
+            log::warn!("[lsp {key}] no language server: {e}");
+        })?;
+        log::info!("[lsp {key}] resolved {}", install.display);
         let client = LspClient::start(root, &install.exe, app.clone())?;
         servers.insert(key, Arc::clone(&client));
         Ok(client)
     }
 
     pub fn stop(&self, root: &str) {
-        let client = self
-            .servers
-            .lock()
-            .expect("lsp state poisoned")
-            .remove(root);
+        let client = {
+            let mut servers = self.servers.lock().expect("lsp state poisoned");
+            let key = servers
+                .keys()
+                .find(|key| Self::same_root(key, root))
+                .cloned();
+            key.and_then(|key| servers.remove(&key))
+        };
         if let Some(client) = client {
+            log::info!("[lsp {root}] stopping");
             client.shutdown();
+        }
+    }
+
+    fn same_root(key: &str, root: &str) -> bool {
+        if cfg!(windows) {
+            key.eq_ignore_ascii_case(root)
+        } else {
+            key == root
         }
     }
 
@@ -91,5 +116,20 @@ impl LspState {
             .cloned()
             .collect();
         roots.iter().map(|root| self.status(root)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LspState;
+
+    #[test]
+    fn a_differently_cased_root_matches_only_where_the_filesystem_agrees() {
+        assert!(LspState::same_root("C:/Users/me/app", "C:/Users/me/app"));
+        assert_eq!(
+            LspState::same_root("C:/Users/me/app", "c:/users/me/app"),
+            cfg!(windows)
+        );
+        assert!(!LspState::same_root("C:/Users/me/app", "C:/Users/me/other"));
     }
 }

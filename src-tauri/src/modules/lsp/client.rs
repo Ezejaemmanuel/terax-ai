@@ -116,7 +116,11 @@ impl LspClient {
             })
             .map_err(|e| e.to_string())?;
 
-        client.initialize(root)?;
+        log::info!("[lsp {root_display}] started {}", client.exe);
+        client.initialize(root).inspect_err(|e| {
+            log::error!("[lsp {root_display}] initialize failed: {e}");
+        })?;
+        log::info!("[lsp {root_display}] ready");
         Ok(client)
     }
 
@@ -192,15 +196,24 @@ impl LspClient {
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown error");
+                    log::warn!("[lsp {}] {method} failed: {message}", self.root);
                     return Err(format!("{method} failed: {message}"));
                 }
                 Ok(response.get("result").cloned().unwrap_or(Value::Null))
             }
             Err(RecvTimeoutError::Timeout) => {
                 self.pending.lock().expect("lsp pending poisoned").remove(&id);
+                log::warn!(
+                    "[lsp {}] {method} timed out after {}s",
+                    self.root,
+                    REQUEST_TIMEOUT.as_secs()
+                );
                 Err(format!("{method} timed out"))
             }
-            Err(RecvTimeoutError::Disconnected) => Err("language server exited".into()),
+            Err(RecvTimeoutError::Disconnected) => {
+                log::warn!("[lsp {}] {method} lost: server exited", self.root);
+                Err("language server exited".into())
+            }
         }
     }
 

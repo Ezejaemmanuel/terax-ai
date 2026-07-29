@@ -37,10 +37,13 @@ export function LspToggle({ root }: Props) {
 
   const on = mode !== "off";
   const state = on ? (status?.state ?? "starting") : "stopped";
+  const remembered = mode === "persistent" ? " (remembered)" : " (this session)";
+  // The exe belongs in the tooltip: which tsgo a project resolved is the first
+  // thing worth knowing when the results look wrong.
   const title = on
     ? state === "failed"
       ? `TypeScript: ${status?.error ?? "failed to start"}`
-      : `TypeScript ${state}${mode === "persistent" ? " (remembered)" : " (this session)"}`
+      : `TypeScript ${state}${remembered}${status?.exe ? `\n${status.exe}` : ""}`
     : "TypeScript off. Click to enable for this session, right-click for more.";
 
   return (
@@ -55,19 +58,27 @@ export function LspToggle({ root }: Props) {
           }}
           className={cn(
             "flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[9px] font-semibold tracking-wide transition-colors",
-            on
-              ? "bg-foreground/[0.08] text-foreground/80 hover:bg-foreground/[0.12]"
-              : "text-muted-foreground/40 hover:bg-foreground/[0.05] hover:text-muted-foreground",
+            on && state === "failed"
+              ? "bg-destructive/15 text-destructive hover:bg-destructive/25"
+              : on
+                ? "bg-foreground/[0.08] text-foreground/80 hover:bg-foreground/[0.12]"
+                : "text-muted-foreground/40 hover:bg-foreground/[0.05] hover:text-muted-foreground",
           )}
         >
           <span>TS</span>
-          {on && (
-            <span
-              className={cn(
-                "size-1 rounded-full",
-                DOT_BY_STATE[state] ?? DOT_BY_STATE.stopped,
-              )}
-            />
+          {/* A dot alone was too small to read as broken, and a server that
+              refuses to start is exactly what has to be noticed. */}
+          {on && state === "failed" ? (
+            <span>!</span>
+          ) : (
+            on && (
+              <span
+                className={cn(
+                  "size-1 rounded-full",
+                  DOT_BY_STATE[state] ?? DOT_BY_STATE.stopped,
+                )}
+              />
+            )
           )}
         </button>
       </ContextMenuTrigger>
