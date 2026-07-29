@@ -121,9 +121,9 @@ pub async fn lsp_did_open(
     path: String,
     text: String,
     language_id: String,
-    /// Absent means authoritative. Only a read-only view (a diff) passes false,
-    /// so it can attach to a file an editor already owns without replacing the
-    /// server's copy of unsaved edits.
+    // Absent means authoritative. Only a read-only view (a diff) passes false,
+    // so it can attach to a file an editor already owns without replacing the
+    // server's copy of unsaved edits.
     overwrite: Option<bool>,
     workspace: Option<WorkspaceEnv>,
     app: AppHandle,
