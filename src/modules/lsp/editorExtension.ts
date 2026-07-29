@@ -4,6 +4,7 @@ import { EditorView, ViewPlugin, hoverTooltip, type ViewUpdate } from "@codemirr
 import { listen } from "@tauri-apps/api/event";
 import { native, type LspDiagnostic } from "@/modules/ai/lib/native";
 import { requestOpenFile } from "@/lib/openFileRequests";
+import { renderHoverContent } from "./hoverContent";
 import { lspWarn } from "./log";
 import { languageIdForPath } from "./paths";
 import { normalizeRoot, recordFileProblems } from "./store";
@@ -12,10 +13,23 @@ import { normalizeRoot, recordFileProblems } from "./store";
 // after which the buffer is worth re-checking.
 const CHANGE_DEBOUNCE_MS = 400;
 
+// How long a hover waits for the finished answer before showing a placeholder.
+const HOVER_PLACEHOLDER_MS = 120;
+const PENDING = Symbol("hover pending");
+
 export type LspContext = {
   getPath: () => string;
   /** Project root, or null once the project is no longer enabled. */
   getRoot: () => string | null;
+};
+
+export type LspFeatures = {
+  /**
+   * Keep the server's copy of the buffer current and mark up its diagnostics.
+   * A read-only view (a diff) turns this off: it never edits, and it does not
+   * own the document, so it must not report problems for it either.
+   */
+  sync?: boolean;
 };
 
 /** LSP positions are zero-based line + UTF-16 offset; CodeMirror lines are 1-based. */
@@ -79,7 +93,10 @@ async function pullDiagnostics(view: EditorView, context: LspContext): Promise<v
  * server's copy of the buffer current, refreshes diagnostics, and answers
  * ctrl/cmd+click with go-to-definition.
  */
-export function lspExtension(context: LspContext): Extension {
+export function lspExtension(
+  context: LspContext,
+  features: LspFeatures = {},
+): Extension {
   const sync = ViewPlugin.fromClass(
     class {
       private timer: ReturnType<typeof setTimeout> | null = null;
@@ -163,38 +180,103 @@ export function lspExtension(context: LspContext): Extension {
     },
   });
 
-  const hover = hoverTooltip(async (view, pos) => {
-    const root = context.getRoot();
-    if (!root) return null;
-    const path = context.getPath();
-    const { line, character } = toPosition(view.state, pos);
-    const text = await native
-      .lspHover(root, path, line, character)
-      .catch((error: unknown) => {
-        lspWarn(`hover for ${path} failed:`, error);
-        return null;
-      });
-    if (!text || context.getPath() !== path) return null;
-    return {
-      pos,
-      create() {
-        const dom = document.createElement("div");
-        dom.className = "cm-lsp-hover";
-        dom.textContent = text;
-        return { dom };
-      },
-    };
-  });
+  const hover = hoverTooltip(
+    async (view, pos) => {
+      const root = context.getRoot();
+      if (!root) return null;
+      const path = context.getPath();
+      const { line, character } = toPosition(view.state, pos);
+      const pending = native
+        .lspHover(root, path, line, character)
+        .catch((error: unknown) => {
+          lspWarn(`hover for ${path} failed:`, error);
+          return null;
+        });
+
+      // A warm server answers in a few milliseconds, so wait briefly for the
+      // finished tooltip. Past that the answer would land after the pointer
+      // moved, and CodeMirror discards a late result: the first hover into a
+      // cold project would silently show nothing at all. Committing to a
+      // placeholder keeps the answer that is already on its way.
+      const late = await Promise.race([
+        pending,
+        new Promise<typeof PENDING>((resolve) => {
+          setTimeout(() => resolve(PENDING), HOVER_PLACEHOLDER_MS);
+        }),
+      ]);
+      if (late !== PENDING) {
+        if (!late || context.getPath() !== path) return null;
+        return { pos, create: () => ({ dom: renderHoverContent(late) }) };
+      }
+
+      return {
+        pos,
+        create() {
+          const dom = document.createElement("div");
+          dom.className = "cm-lsp-hover cm-lsp-hover-pending";
+          dom.textContent = "Loading…";
+          void pending.then((text) => {
+            if (!text || context.getPath() !== path) {
+              // Nothing to say after all; an empty box would be worse than no
+              // tooltip, and CodeMirror owns the element so it cannot be removed.
+              const host = dom.closest<HTMLElement>(".cm-tooltip") ?? dom;
+              host.style.display = "none";
+              return;
+            }
+            dom.classList.remove("cm-lsp-hover-pending");
+            dom.replaceChildren(...renderHoverContent(text).childNodes);
+          });
+          return { dom };
+        },
+      };
+    },
+    { hideOnChange: true },
+  );
 
   const hoverTheme = EditorView.baseTheme({
     ".cm-lsp-hover": {
-      maxWidth: "480px",
-      padding: "6px 8px",
-      whiteSpace: "pre-wrap",
+      maxWidth: "560px",
+      maxHeight: "320px",
+      overflowY: "auto",
+      padding: "6px 9px",
       fontSize: "12px",
-      lineHeight: "1.45",
+      lineHeight: "1.5",
+    },
+    ".cm-lsp-hover-pending": {
+      opacity: "0.6",
+      fontStyle: "italic",
+    },
+    ".cm-lsp-hover-code": {
+      fontFamily: "var(--font-mono, monospace)",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+    },
+    // Only between blocks, so a lone signature keeps the tooltip compact.
+    ".cm-lsp-hover-code + .cm-lsp-hover-doc, .cm-lsp-hover-doc + .cm-lsp-hover-code": {
+      marginTop: "6px",
+      paddingTop: "6px",
+      borderTop: "1px solid rgba(127, 127, 127, 0.25)",
+    },
+    ".cm-lsp-hover-doc": {
+      whiteSpace: "pre-wrap",
+      opacity: "0.85",
+    },
+    ".cm-lsp-hover-doc + .cm-lsp-hover-doc": {
+      marginTop: "4px",
+    },
+    ".cm-lsp-hover-doc code": {
+      fontFamily: "var(--font-mono, monospace)",
+      fontSize: "11.5px",
+      padding: "0 3px",
+      borderRadius: "3px",
+      background: "rgba(127, 127, 127, 0.18)",
     },
   });
 
-  return [sync, gotoDefinition, hover, hoverTheme];
+  return [
+    features.sync === false ? [] : sync,
+    gotoDefinition,
+    hover,
+    hoverTheme,
+  ];
 }

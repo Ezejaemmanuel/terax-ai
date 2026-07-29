@@ -18,8 +18,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { MarkdownContent } from "@/modules/markdown";
+import { Breadcrumb } from "./Breadcrumb";
 import { Prec, type Extension } from "@codemirror/state";
 import { vim } from "@replit/codemirror-vim";
 import {
@@ -39,6 +41,7 @@ import { lspWarn } from "@/modules/lsp/log";
 import { gitGutter, setGitBaseline } from "./lib/gitGutter";
 import { native, type GitRepoInfo } from "@/modules/ai/lib/native";
 import { onGitHeadChanged } from "@/lib/gitEvents";
+import { requestOpenFile } from "@/lib/openFileRequests";
 import { listenFsChanged, parentDir } from "@/modules/explorer/lib/watch";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 
@@ -87,15 +90,21 @@ export type EditorPaneHandle = {
   gotoLine: (line: number) => void;
   getSelection: () => string | null;
   getPath: () => string;
+  /** 1-based line the cursor sits on, or null before the view exists. */
+  getCursorLine: () => number | null;
   /** Re-read the file from disk. Skips silently if the buffer is dirty. */
   reload: () => boolean;
   /** Apply CodeMirror's undo/redo commands. */
   undo: () => void;
   redo: () => void;
+  /** Ask the language server where the symbol at the cursor is defined. */
+  gotoDefinition: () => void;
 };
 
 type Props = {
   path: string;
+  /** Workspace root, so the breadcrumb can show a path relative to it. */
+  rootPath?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
@@ -108,7 +117,7 @@ function formatBytes(n: number): string {
 }
 
 export const EditorPane = forwardRef<EditorPaneHandle, Props>(
-  function EditorPane({ path, onDirtyChange, onSaved, onClose }, ref) {
+  function EditorPane({ path, rootPath, onDirtyChange, onSaved, onClose }, ref) {
     const { doc, onChange, save, reload } = useDocument({ path, onDirtyChange });
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
@@ -508,6 +517,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
           return view.state.sliceDoc(from, to);
         },
         getPath: () => path,
+        getCursorLine: () => {
+          const view = cmRef.current?.view;
+          if (!view) return null;
+          return view.state.doc.lineAt(view.state.selection.main.head).number;
+        },
         reload: () => reloadRef.current(),
         undo: () => {
           const view = cmRef.current?.view;
@@ -517,47 +531,80 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
           const view = cmRef.current?.view;
           if (view) redo(view);
         },
+        gotoDefinition: () => {
+          const view = cmRef.current?.view;
+          const root = lspRootRef.current;
+          if (!view || !root) return;
+          const head = view.state.selection.main.head;
+          const lineObj = view.state.doc.lineAt(head);
+          void native
+            .lspDefinition(root, path, lineObj.number - 1, head - lineObj.from)
+            .then((location) => {
+              if (!location) {
+                lspWarn(`no definition at ${path}:${lineObj.number}`);
+                return;
+              }
+              requestOpenFile({
+                path: location.path,
+                line: location.line + 1,
+                column: location.character + 1,
+              });
+            })
+            .catch((error: unknown) => {
+              lspWarn(`definition for ${path} failed:`, error);
+            });
+        },
       }),
       [path, revealLine],
     );
 
+    // The breadcrumb belongs to the file, not to the buffer, so it stays put
+    // through loading and the states that never reach an editor.
+    const shell = (children: ReactNode) => (
+      <div className="flex h-full min-h-0 flex-col">
+        <Breadcrumb path={path} rootPath={rootPath} />
+        {children}
+      </div>
+    );
+
     if (doc.status === "loading") {
-      return (
-        <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+      return shell(
+        <div className="flex min-h-0 flex-1 items-center justify-center text-xs text-muted-foreground">
           Loading…
-        </div>
+        </div>,
       );
     }
     if (doc.status === "error") {
-      return (
-        <div className="flex h-full items-center justify-center px-6 text-center text-xs text-destructive">
+      return shell(
+        <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs text-destructive">
           {doc.message}
-        </div>
+        </div>,
       );
     }
     if (doc.status === "binary") {
-      return (
-        <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+      return shell(
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">Binary file</div>
           <div className="text-xs text-muted-foreground">
             {formatBytes(doc.size)} · preview not supported
           </div>
-        </div>
+        </div>,
       );
     }
     if (doc.status === "toolarge") {
-      return (
-        <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+      return shell(
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">File too large</div>
           <div className="text-xs text-muted-foreground">
             {formatBytes(doc.size)} exceeds the {formatBytes(doc.limit)} limit.
           </div>
-        </div>
+        </div>,
       );
     }
 
     return (
       <div className="flex h-full min-h-0 flex-col">
+        <Breadcrumb path={path} rootPath={rootPath} />
         {isMarkdown && (
           <div className="flex shrink-0 items-center justify-between border-b border-border/60 px-3 py-1.5 text-[11px]">
             <span className="text-muted-foreground">

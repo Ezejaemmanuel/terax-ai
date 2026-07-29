@@ -37,8 +37,11 @@ export function ShortcutsSection() {
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
 
   const filteredShortcuts = useMemo(() => {
-    // Filter out internal/non-overridable shortcuts like tab.selectByIndex.
-    const base = SHORTCUTS.filter((s) => s.id !== "tab.selectByIndex");
+    // Filter out internal/non-overridable shortcuts like tab.selectByIndex, and
+    // the display-only entries whose keys belong to CodeMirror.
+    const base = SHORTCUTS.filter(
+      (s) => s.id !== "tab.selectByIndex" && !s.displayOnly,
+    );
     if (!search) return base;
     const lower = search.toLowerCase();
     return base.filter(

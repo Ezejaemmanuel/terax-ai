@@ -328,12 +328,21 @@ export const native = {
   lspStop: (root: string) => invoke<void>("lsp_stop", { root }),
   lspStopAll: () => invoke<void>("lsp_stop_all"),
   lspStatuses: () => invoke<LspStatus[]>("lsp_statuses"),
-  lspDidOpen: (root: string, path: string, text: string, languageId: string) =>
+  lspDidOpen: (
+    root: string,
+    path: string,
+    text: string,
+    languageId: string,
+    // A read-only view (a diff) passes false so attaching to a file an editor
+    // already owns cannot replace the server's copy of unsaved edits.
+    overwrite = true,
+  ) =>
     invoke<void>("lsp_did_open", {
       root,
       path,
       text,
       languageId,
+      overwrite,
       workspace: currentWorkspaceEnv(),
     }),
   lspDidChange: (root: string, path: string, text: string, languageId: string) =>

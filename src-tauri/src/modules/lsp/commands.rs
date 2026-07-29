@@ -121,6 +121,10 @@ pub async fn lsp_did_open(
     path: String,
     text: String,
     language_id: String,
+    /// Absent means authoritative. Only a read-only view (a diff) passes false,
+    /// so it can attach to a file an editor already owns without replacing the
+    /// server's copy of unsaved edits.
+    overwrite: Option<bool>,
     workspace: Option<WorkspaceEnv>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -132,7 +136,7 @@ pub async fn lsp_did_open(
         let root = authorized_root(registry, &root, &workspace)?;
         let path = authorized_file(&root, &path)?;
         let client = lsp.ensure(&root, app)?;
-        client.did_open(&path, &text, &language_id);
+        client.did_open(&path, &text, &language_id, overwrite.unwrap_or(true));
         Ok(())
     })
     .await
@@ -160,7 +164,7 @@ pub async fn lsp_did_change(
             return Ok(());
         };
         if !client.did_change(&path, &text) {
-            client.did_open(&path, &text, &language_id);
+            client.did_open(&path, &text, &language_id, true);
         }
         Ok(())
     })

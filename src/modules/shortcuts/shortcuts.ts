@@ -31,8 +31,21 @@ export type ShortcutId =
   | "shortcuts.open"
   | "settings.open"
   | "sidebar.toggle"
+  | "nav.back"
+  | "nav.forward"
+  | "nav.gotoDefinition"
+  | "problems.open"
+  | "problems.next"
+  | "problems.prev"
   | "editor.undo"
-  | "editor.redo";
+  | "editor.redo"
+  | "editor.toggleComment"
+  | "editor.moveLineUp"
+  | "editor.moveLineDown"
+  | "editor.copyLineUp"
+  | "editor.copyLineDown"
+  | "editor.deleteLine"
+  | "editor.gotoLine";
 
 export type ShortcutGroup =
   | "General"
@@ -42,6 +55,7 @@ export type ShortcutGroup =
   | "Search"
   | "AI"
   | "View"
+  | "Navigation"
   | "Editor";
 
 export type KeyBinding = {
@@ -58,6 +72,13 @@ export type Shortcut = {
   group: ShortcutGroup;
   defaultBindings: KeyBinding[];
   allowRepeat?: boolean;
+  /**
+   * The key is CodeMirror's, not ours: the entry exists so the shortcuts UI can
+   * list it, and rebinding it here would change nothing. Registering it without
+   * an App-level handler also leaves the event untouched, which is what lets
+   * CodeMirror keep handling it.
+   */
+  displayOnly?: boolean;
 };
 
 export const SHORTCUTS: Shortcut[] = [
@@ -229,11 +250,50 @@ export const SHORTCUTS: Shortcut[] = [
     group: "View",
     defaultBindings: [{ [MOD_PROP]: true, key: "0" }],
   },
-  // Editor entries are display-only: CodeMirror's historyKeymap binds these
-  // keys natively. We register them here so the shortcuts dialog can surface
-  // them — they don't have App-level handlers, so `useGlobalShortcuts` falls
-  // through without `preventDefault`, leaving CodeMirror to handle the event.
-  // Also excluded from the customization UI in ShortcutsSection.
+  {
+    id: "nav.back",
+    label: "Go back",
+    group: "Navigation",
+    defaultBindings: [{ alt: true, key: "ArrowLeft" }],
+    allowRepeat: true,
+  },
+  {
+    id: "nav.forward",
+    label: "Go forward",
+    group: "Navigation",
+    defaultBindings: [{ alt: true, key: "ArrowRight" }],
+    allowRepeat: true,
+  },
+  {
+    id: "nav.gotoDefinition",
+    label: "Go to definition",
+    group: "Navigation",
+    defaultBindings: [{ key: "F12" }],
+  },
+  {
+    id: "problems.open",
+    label: "Show problems",
+    group: "Navigation",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "m" }],
+  },
+  {
+    id: "problems.next",
+    label: "Next problem",
+    group: "Navigation",
+    defaultBindings: [{ key: "F8" }],
+    allowRepeat: true,
+  },
+  {
+    id: "problems.prev",
+    label: "Previous problem",
+    group: "Navigation",
+    defaultBindings: [{ shift: true, key: "F8" }],
+    allowRepeat: true,
+  },
+  // Editor entries are display-only: CodeMirror binds these keys natively. We
+  // register them here so the shortcuts dialog can surface them — they don't
+  // have App-level handlers, so `useGlobalShortcuts` falls through without
+  // `preventDefault`, leaving CodeMirror to handle the event.
   {
     id: "editor.undo",
     label: "Undo",
@@ -246,6 +306,60 @@ export const SHORTCUTS: Shortcut[] = [
     group: "Editor",
     defaultBindings: [{ [MOD_PROP]: true, key: "y" }],
   },
+  {
+    id: "editor.toggleComment",
+    label: "Toggle line comment",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, key: "/" }],
+    displayOnly: true,
+  },
+  {
+    id: "editor.moveLineUp",
+    label: "Move line up",
+    group: "Editor",
+    defaultBindings: [{ alt: true, key: "ArrowUp" }],
+    allowRepeat: true,
+    displayOnly: true,
+  },
+  {
+    id: "editor.moveLineDown",
+    label: "Move line down",
+    group: "Editor",
+    defaultBindings: [{ alt: true, key: "ArrowDown" }],
+    allowRepeat: true,
+    displayOnly: true,
+  },
+  {
+    id: "editor.copyLineUp",
+    label: "Copy line up",
+    group: "Editor",
+    defaultBindings: [{ alt: true, shift: true, key: "ArrowUp" }],
+    allowRepeat: true,
+    displayOnly: true,
+  },
+  {
+    id: "editor.copyLineDown",
+    label: "Copy line down",
+    group: "Editor",
+    defaultBindings: [{ alt: true, shift: true, key: "ArrowDown" }],
+    allowRepeat: true,
+    displayOnly: true,
+  },
+  {
+    id: "editor.deleteLine",
+    label: "Delete line",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "k" }],
+    allowRepeat: true,
+    displayOnly: true,
+  },
+  {
+    id: "editor.gotoLine",
+    label: "Go to line",
+    group: "Editor",
+    defaultBindings: [{ alt: true, key: "g" }],
+    displayOnly: true,
+  },
 ];
 
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
@@ -255,6 +369,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   "Terminal",
   "View",
   "Search",
+  "Navigation",
   "AI",
   "Editor",
 ];

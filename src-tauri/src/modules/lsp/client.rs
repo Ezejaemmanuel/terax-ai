@@ -5,6 +5,7 @@
 // reply. Writes are serialized by a mutex because the reader thread also writes
 // (it answers server-initiated requests, which the server blocks on).
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -40,8 +41,16 @@ pub struct LspClient {
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Pending,
     next_id: AtomicI64,
-    /// Open document versions, keyed by canonical path.
-    documents: Mutex<HashMap<String, i64>>,
+    /// Open documents, keyed by canonical path.
+    documents: Mutex<HashMap<String, Document>>,
+}
+
+/// One open document. `viewers` counts the panes holding it open (an editor and
+/// a diff of the same file share the server's single copy), so the document is
+/// only closed once the last of them goes away.
+struct Document {
+    version: i64,
+    viewers: usize,
 }
 
 fn spawn_process(root: &Path, exe: &Path) -> Result<Child, String> {
@@ -146,7 +155,10 @@ impl LspClient {
                     "publishDiagnostics": { "relatedInformation": false },
                     "diagnostic": { "dynamicRegistration": false, "relatedDocumentSupport": false },
                     "definition": { "linkSupport": true },
-                    "hover": { "contentFormat": ["plaintext", "markdown"] },
+                    // Markdown first: the server picks the first format it can
+                    // produce, and only its markdown answer carries the doc
+                    // comment and a fenced signature worth rendering.
+                    "hover": { "contentFormat": ["markdown", "plaintext"] },
                 },
             },
         });
@@ -235,16 +247,34 @@ impl LspClient {
             .contains_key(path)
     }
 
-    pub fn did_open(&self, path: &str, text: &str, language_id: &str) {
-        // Re-opening an already-open document is a change, not a second open:
-        // a duplicate didOpen is a protocol violation.
-        let (version, already_open) = {
+    /// Opens a document, or adds a viewer to one that is already open, since a
+    /// duplicate didOpen is a protocol violation. `overwrite` says whether this
+    /// caller's text is authoritative: the editor owns the buffer and passes
+    /// true, a read-only view passes false so it cannot replace unsaved edits
+    /// with what happens to be on disk.
+    pub fn did_open(&self, path: &str, text: &str, language_id: &str, overwrite: bool) {
+        // `None` means the extra viewer needs no message at all.
+        let opened = {
             let mut docs = self.documents.lock().expect("lsp documents poisoned");
-            let version = docs.get(path).copied().map_or(1, |v| v + 1);
-            let already_open = docs.insert(path.to_string(), version).is_some();
-            (version, already_open)
+            match docs.entry(path.to_string()) {
+                Entry::Occupied(mut entry) => {
+                    let doc = entry.get_mut();
+                    doc.viewers += 1;
+                    if overwrite {
+                        doc.version += 1;
+                        Some((false, doc.version))
+                    } else {
+                        None
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(Document { version: 1, viewers: 1 });
+                    Some((true, 1))
+                }
+            }
         };
-        if already_open {
+        let Some((first, version)) = opened else { return };
+        if !first {
             self.send_change(path, text, version);
             return;
         }
@@ -264,11 +294,11 @@ impl LspClient {
     pub fn did_change(&self, path: &str, text: &str) -> bool {
         let version = {
             let mut docs = self.documents.lock().expect("lsp documents poisoned");
-            let Some(current) = docs.get(path).copied() else {
+            let Some(doc) = docs.get_mut(path) else {
                 return false;
             };
-            docs.insert(path.to_string(), current + 1);
-            current + 1
+            doc.version += 1;
+            doc.version
         };
         self.send_change(path, text, version);
         true
@@ -284,14 +314,24 @@ impl LspClient {
         );
     }
 
+    /// Drops one viewer, closing the document on the server once the last one
+    /// is gone.
     pub fn did_close(&self, path: &str) {
-        let existed = self
-            .documents
-            .lock()
-            .expect("lsp documents poisoned")
-            .remove(path)
-            .is_some();
-        if existed {
+        let last = {
+            let mut docs = self.documents.lock().expect("lsp documents poisoned");
+            match docs.entry(path.to_string()) {
+                Entry::Occupied(mut entry) if entry.get().viewers > 1 => {
+                    entry.get_mut().viewers -= 1;
+                    false
+                }
+                Entry::Occupied(entry) => {
+                    entry.remove();
+                    true
+                }
+                Entry::Vacant(_) => false,
+            }
+        };
+        if last {
             self.notify(
                 "textDocument/didClose",
                 json!({ "textDocument": { "uri": uri::path_to_uri(path) } }),

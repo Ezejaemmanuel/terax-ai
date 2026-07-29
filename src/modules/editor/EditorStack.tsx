@@ -6,6 +6,8 @@ import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 type Props = {
   tabs: Tab[];
   activeId: number;
+  /** Workspace root, shown as the start of each editor's breadcrumb. */
+  rootPath?: string | null;
   onDirtyChange: (id: number, dirty: boolean) => void;
   registerHandle: (id: number, handle: EditorPaneHandle | null) => void;
   onCloseTab: (id: number) => void;
@@ -14,6 +16,7 @@ type Props = {
 export function EditorStack({
   tabs,
   activeId,
+  rootPath,
   onDirtyChange,
   registerHandle,
   onCloseTab,
@@ -100,6 +103,7 @@ export function EditorStack({
               <EditorPane
                 ref={getRefCallback(t.id)}
                 path={t.path}
+                rootPath={rootPath}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}
               />

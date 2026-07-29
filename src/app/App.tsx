@@ -84,6 +84,12 @@ import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import { ProblemsPanel, useLspStore } from "@/modules/lsp";
 import { onOpenFileRequest } from "@/lib/openFileRequests";
 import {
+  forgetNavigation,
+  navigateBack,
+  navigateForward,
+  recordNavigation,
+} from "@/modules/navigation";
+import {
   SourceControlPanel,
   useSourceControl,
 } from "@/modules/source-control";
@@ -1110,20 +1116,14 @@ export default function App() {
     [newTab],
   );
 
-  const handleOpenFile = useCallback(
-    (path: string, pin?: boolean) => {
-      // Explorer defaults to preview (pin=false); explicit actions like
-      // context-menu "Open" pass pin=true for a persistent tab.
-      openFileTab(path, pin ?? false);
-    },
-    [openFileTab],
-  );
-
-  // Open a file from a content-search hit and jump to the matching line.
-  const handleOpenFileAtLine = useCallback(
-    (path: string, line: number) => {
+  const openAt = useCallback(
+    (path: string, line: number | null, pin: boolean) => {
+      if (line == null) {
+        openFileTab(path, pin);
+        return;
+      }
       pendingRevealRef.current.set(path, line);
-      openFileTab(path, false);
+      openFileTab(path, pin);
       // If the file is already open, its handle won't re-register, so drive the
       // jump directly. Otherwise registerEditorHandle consumes the pending line.
       for (const h of editorRefs.current.values()) {
@@ -1135,6 +1135,73 @@ export default function App() {
       }
     },
     [openFileTab],
+  );
+
+  // Where the user is leaving from, so going back returns to the line they were
+  // actually on rather than wherever they first entered that file.
+  const currentPlace = useCallback(() => {
+    const handle = editorRefs.current.get(activeId);
+    return handle ? handle.getCursorLine() : null;
+  }, [activeId]);
+
+  const handleOpenFile = useCallback(
+    (path: string, pin?: boolean) => {
+      recordNavigation({ path }, currentPlace());
+      // Explorer defaults to preview (pin=false); explicit actions like
+      // context-menu "Open" pass pin=true for a persistent tab.
+      openAt(path, null, pin ?? false);
+    },
+    [openAt, currentPlace],
+  );
+
+  // Open a file from a content-search hit and jump to the matching line.
+  const handleOpenFileAtLine = useCallback(
+    (path: string, line: number) => {
+      recordNavigation({ path, line }, currentPlace());
+      openAt(path, line, false);
+    },
+    [openAt, currentPlace],
+  );
+
+  // Back/forward replay history rather than adding to it, so they go through
+  // `openAt` and never `recordNavigation`.
+  const navigateHistory = useCallback(
+    (direction: -1 | 1) => {
+      const from = currentPlace();
+      const entry = direction === -1 ? navigateBack(from) : navigateForward(from);
+      if (!entry) return;
+      openAt(entry.path, entry.line ?? null, true);
+    },
+    [openAt, currentPlace],
+  );
+
+  // Position in the flattened problem list that F8 walks. It indexes a list
+  // rebuilt on every press, so it is a hint rather than a cursor: the worst a
+  // stale value can do is skip a problem after the list changed underneath it.
+  const problemCursorRef = useRef(-1);
+  const gotoProblem = useCallback(
+    (direction: 1 | -1) => {
+      const flat: { path: string; line: number }[] = [];
+      for (const files of Object.values(useLspStore.getState().problems)) {
+        for (const file of files) {
+          for (const d of file.diagnostics) {
+            flat.push({ path: file.path, line: d.startLine + 1 });
+          }
+        }
+      }
+      if (flat.length === 0) return;
+      flat.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+      const previous = problemCursorRef.current;
+      const next =
+        previous < 0
+          ? direction === 1
+            ? 0
+            : flat.length - 1
+          : (previous + direction + flat.length) % flat.length;
+      problemCursorRef.current = next;
+      handleOpenFileAtLine(flat[next].path, flat[next].line);
+    },
+    [handleOpenFileAtLine],
   );
 
   // Go-to-definition and the Problems list both ask for a file this way; they
@@ -1197,9 +1264,11 @@ export default function App() {
   const handlePathDeleted = useCallback(
     (path: string) => {
       const dirty: number[] = [];
+      forgetNavigation(path);
       for (const t of tabs) {
         if (t.kind !== "editor") continue;
         if (t.path !== path && !t.path.startsWith(`${path}/`)) continue;
+        forgetNavigation(t.path);
         if (t.dirty) {
           dirty.push(t.id);
         } else {
@@ -1419,9 +1488,19 @@ export default function App() {
       "view.zoomReset": zoomReset,
       "editor.undo": () => editorRefs.current.get(activeId)?.undo(),
       "editor.redo": () => editorRefs.current.get(activeId)?.redo(),
+      "nav.back": () => navigateHistory(-1),
+      "nav.forward": () => navigateHistory(1),
+      "nav.gotoDefinition": () =>
+        editorRefs.current.get(activeId)?.gotoDefinition(),
+      "problems.open": () => cycleSidebarView("problems"),
+      "problems.next": () => gotoProblem(1),
+      "problems.prev": () => gotoProblem(-1),
     }),
     [
       activeId,
+      cycleSidebarView,
+      gotoProblem,
+      navigateHistory,
       cycleTab,
       handleCloseTabOrPane,
       openNewTab,
@@ -1455,6 +1534,12 @@ export default function App() {
         if (!inTerminal) return false;
         const sel = captureActiveSelection();
         return !sel || !sel.trim();
+      }
+      if (id === "nav.back" || id === "nav.forward") {
+        // Alt+Arrow is a word-motion key in a shell; only claim it elsewhere.
+        const target =
+          (e.target as HTMLElement | null) ?? document.activeElement;
+        return !!(target as HTMLElement | null)?.closest?.(".xterm");
       }
       if (id === "terminal.clear") {
         // Only intercept ⌘K while a terminal is focused; elsewhere let the key
@@ -1801,6 +1886,7 @@ export default function App() {
         <EditorStack
           tabs={tabs}
           activeId={activeId}
+          rootPath={explorerRoot}
           registerHandle={registerEditorHandle}
           onDirtyChange={handleEditorDirty}
           onCloseTab={disposeTab}

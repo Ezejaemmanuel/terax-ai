@@ -7,7 +7,20 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildSharedExtensions, languageCompartment } from "./lib/extensions";
+import { requestOpenFile } from "@/lib/openFileRequests";
+import { native } from "@/modules/ai/lib/native";
+import {
+  isLspCandidate,
+  languageIdForPath,
+  rootForPathIn,
+  useLspStore,
+} from "@/modules/lsp";
+import { lspWarn } from "@/modules/lsp/log";
+import {
+  buildSharedExtensions,
+  languageCompartment,
+  lspCompartment,
+} from "./lib/extensions";
 import {
   fetchCommitDiff,
   fetchWorkingDiff,
@@ -200,6 +213,42 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
     modifiedContent.length > LARGE_FILE_THRESHOLD;
   const useFallback = isBinary || isTooLarge;
 
+  // The diff's document is the modified side, so its offsets are the live
+  // file's offsets and the language server can be asked about them directly.
+  const absPath = useMemo(
+    () => `${repoRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/${path}`,
+    [repoRoot, path],
+  );
+  const isWorking = source.kind === "working";
+  // Only a working-tree diff matches what the server has: a commit's content is
+  // history, and asking about positions in it would answer about another file.
+  const lspRoot = useLspStore((s) =>
+    isWorking && isLspCandidate(absPath) ? rootForPathIn(s.enabled, absPath) : null,
+  );
+  const lspRootRef = useRef<string | null>(lspRoot);
+  lspRootRef.current = lspRoot;
+
+  const openFileOnModClick = useMemo(
+    () =>
+      EditorView.domEventHandlers({
+        mousedown(event, view) {
+          if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
+          // With a server attached, go-to-definition answers this click; this is
+          // the fallback that at least opens the real file at the same line.
+          if (lspRootRef.current) return false;
+          const offset = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (offset == null) return false;
+          event.preventDefault();
+          requestOpenFile({
+            path: absPath,
+            line: view.state.doc.lineAt(offset).number,
+          });
+          return true;
+        },
+      }),
+    [absPath],
+  );
+
   const initialLang = useMemo(() => resolveLanguageSync(path), [path]);
   const extensions = useMemo(
     () => {
@@ -211,6 +260,8 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
       return [
         ...SHARED_EXT,
         languageCompartment.of(initialLang ?? []),
+        lspCompartment.of([]),
+        openFileOnModClick,
         ...READONLY_EXT,
         unifiedMergeView({
           original: originalContent,
@@ -223,8 +274,49 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
         DIFF_THEME,
       ];
     },
-    [originalContent, modifiedContent, initialLang],
+    [originalContent, modifiedContent, initialLang, openFileOnModClick],
   );
+
+  // Attach hover and go-to-definition to a working-tree diff. The document is
+  // opened without claiming ownership, so a file the editor already has open
+  // keeps its unsaved buffer as the server's copy.
+  useEffect(() => {
+    if (!active || state.kind !== "loaded" || useFallback || !lspRoot) return;
+    const languageId = languageIdForPath(absPath);
+    if (!languageId) return;
+    let cancelled = false;
+    let opened = false;
+
+    void (async () => {
+      try {
+        await native.lspDidOpen(lspRoot, absPath, modifiedContent, languageId, false);
+        opened = true;
+      } catch (error) {
+        lspWarn(`diff didOpen ${absPath} failed:`, error);
+        return;
+      }
+      if (cancelled) return;
+      const { lspExtension } = await import("@/modules/lsp/editorExtension");
+      if (cancelled) return;
+      cmRef.current?.view?.dispatch({
+        effects: lspCompartment.reconfigure(
+          lspExtension(
+            { getPath: () => absPath, getRoot: () => lspRootRef.current },
+            { sync: false },
+          ),
+        ),
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      cmRef.current?.view?.dispatch({ effects: lspCompartment.reconfigure([]) });
+      if (!opened) return;
+      void native.lspDidClose(lspRoot, absPath).catch((error: unknown) => {
+        lspWarn(`diff didClose ${absPath} failed:`, error);
+      });
+    };
+  }, [active, state.kind, useFallback, lspRoot, absPath, modifiedContent]);
 
   // Resolve and apply syntax highlighting asynchronously when the language pack
   // isn't cached yet. This must wait until the editor is actually mounted
