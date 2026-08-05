@@ -153,7 +153,8 @@ mod tests {
             m.blocks,
             vec![Block::Text {
                 text: "explain this".into(),
-                truncated: false
+                truncated: false,
+                full_bytes: 12
             }]
         );
 

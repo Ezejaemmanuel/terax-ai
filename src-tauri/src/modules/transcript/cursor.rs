@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::reader::{Append, Page};
-use super::{clamp, text_block, thinking_block, tool_call_block, tool_result_block, Block, Message, Role};
+use super::{text_block, thinking_block, tool_call_block, tool_result_block, Block, Message, Role};
 
 /// Cursor CLI stores each chat as a SQLite database (`store.db`) with a single
 /// `blobs(id TEXT PRIMARY KEY, data BLOB)` table: content-addressed, no
@@ -82,14 +82,10 @@ fn parse_row(rowid: i64, blob_id: &str, data: &[u8]) -> Option<Message> {
         blocks = blocks
             .into_iter()
             .filter_map(|b| match b {
-                Block::Text { text, .. } => {
-                    let (text, truncated) = clamp(&strip_cursor_context(&text));
-                    if text.trim().is_empty() {
-                        None
-                    } else {
-                        Some(Block::Text { text, truncated })
-                    }
-                }
+                // Rebuilt rather than edited in place so `full_bytes` describes
+                // the stripped text the viewer actually shows, not the harness
+                // prompt that wrapped it.
+                Block::Text { text, .. } => text_block(&strip_cursor_context(&text)),
                 other => Some(other),
             })
             .collect();
@@ -182,7 +178,6 @@ fn tool_result_text(b: &Value) -> (String, bool) {
         .pointer("/providerOptions/cursor/highLevelToolCallResult/isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let (text, _) = clamp(&text);
     (text, is_error)
 }
 
@@ -228,6 +223,14 @@ pub fn read_append(path: &Path, byte_offset: u64, next_line: usize) -> io::Resul
         byte_offset: total as u64,
         next_line: total.max(next_line),
     })
+}
+
+/// Look up a single message by its `line` cursor (here, the blob's `rowid`).
+/// Used to serve range reads over one block's full payload, which is why the
+/// message comes back uncapped.
+pub fn find_message(path: &Path, line: usize) -> io::Result<Option<Message>> {
+    let messages = load_messages(path).map_err(to_io_err)?;
+    Ok(messages.into_iter().find(|m| m.line == line))
 }
 
 #[cfg(test)]
@@ -387,6 +390,23 @@ mod tests {
 
         let append = read_append(&path, page.byte_len, page.total_lines).expect("append");
         assert!(append.messages.is_empty());
+    }
+
+    #[test]
+    fn find_message_resolves_a_row_by_its_line_cursor() {
+        let dir = db_with(&[
+            ("b0", r#"{"role":"user","content":"first"}"#),
+            ("b1", r#"{"role":"user","content":"second"}"#),
+        ]);
+        let path = dir.path().join("store.db");
+        let page = read_page(&path, None, 10).expect("page");
+        let line = page.messages[1].line;
+
+        let found = find_message(&path, line).expect("find").expect("message");
+        assert_eq!(found.id, "b1");
+        // Rowids start at 1, so the cursor is not the message index — the
+        // lookup has to match on `line`, not position.
+        assert!(find_message(&path, 999).expect("find").is_none());
     }
 
     #[test]

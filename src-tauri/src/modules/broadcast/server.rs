@@ -23,6 +23,11 @@ use crate::modules::transcript::{reader, Format};
 const MAX_STREAMS: usize = 8;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+/// Range size for expanding one clamped block. Larger than the per-block page
+/// cap so "show the rest" of a big tool result finishes in a few round trips,
+/// still small enough that each one stays a snappy request on a phone.
+const DEFAULT_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_CHUNK_BYTES: usize = 512 * 1024;
 /// Floor between accepted replies. A person types one message at a time; this
 /// only bites on a stuck retry loop or a script, which is the point.
 const MIN_REPLY_INTERVAL: Duration = Duration::from_millis(750);
@@ -64,6 +69,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/sessions", get(sessions))
         .route("/api/sessions/{id}", get(transcript))
+        .route(
+            "/api/sessions/{id}/blocks/{line}/{index}",
+            get(block_chunk),
+        )
         .route("/api/sessions/{id}/reply", post(reply_to_session))
         .route("/api/config", get(config))
         .route("/events", get(events))
@@ -316,21 +325,24 @@ struct PageQuery {
     limit: Option<usize>,
 }
 
+/// The client sends a session id, never a path. Paths come only from our own
+/// index, so there is no traversal surface to defend.
+async fn resolve_source(state: &AppState, id: String) -> Option<(PathBuf, Format)> {
+    let index = state.index.clone();
+    tokio::task::spawn_blocking(move || {
+        find_session(&index(), &id).and_then(|s| s.source().map(|(p, f)| (p.clone(), f)))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 async fn transcript(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<PageQuery>,
 ) -> Response {
-    let index = state.index.clone();
-    // The client sends a session id, never a path. Paths come only from our own
-    // index, so there is no traversal surface to defend.
-    let lookup = tokio::task::spawn_blocking(move || {
-        find_session(&index(), &id).and_then(|s| s.source().map(|(p, f)| (p.clone(), f)))
-    })
-    .await
-    .ok()
-    .flatten();
-    let Some((path, format)) = lookup else {
+    let Some((path, format)) = resolve_source(&state, id).await else {
         return (StatusCode::NOT_FOUND, "unknown session").into_response();
     };
 
@@ -339,6 +351,39 @@ async fn transcript(
     match tokio::task::spawn_blocking(move || reader::read_page(&path, format, before, limit)).await
     {
         Ok(Ok(page)) => Json(page).into_response(),
+        _ => (StatusCode::NOT_FOUND, "transcript unavailable").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ChunkQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
+/// Serves the payload a page's per-block cap left behind, one range at a time.
+/// Addressed by `(line, block index)` — the same line cursor the transcript
+/// pages by — so no server-side state ties a request to an earlier one.
+async fn block_chunk(
+    State(state): State<AppState>,
+    Path((id, line, index)): Path<(String, usize, usize)>,
+    Query(q): Query<ChunkQuery>,
+) -> Response {
+    let Some((path, format)) = resolve_source(&state, id).await else {
+        return (StatusCode::NOT_FOUND, "unknown session").into_response();
+    };
+
+    let offset = q.offset.unwrap_or(0);
+    let limit = q.limit.unwrap_or(DEFAULT_CHUNK_BYTES).clamp(1, MAX_CHUNK_BYTES);
+    match tokio::task::spawn_blocking(move || {
+        reader::read_block_chunk(&path, format, line, index, offset, limit)
+    })
+    .await
+    {
+        Ok(Ok(Some(chunk))) => Json(chunk).into_response(),
+        // A resolved session whose block address is gone: the transcript was
+        // rewritten under the viewer, which is a stale request, not an error.
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "unknown block").into_response(),
         _ => (StatusCode::NOT_FOUND, "transcript unavailable").into_response(),
     }
 }
@@ -630,7 +675,14 @@ mod tests {
 
     #[tokio::test]
     async fn session_routes_require_the_token() {
-        for uri in ["/api/sessions", "/api/sessions/s1", "/events", "/", "/session/abc"] {
+        for uri in [
+            "/api/sessions",
+            "/api/sessions/s1",
+            "/api/sessions/s1/blocks/0/0",
+            "/events",
+            "/",
+            "/session/abc",
+        ] {
             let (status, _) = get(state_with(None), uri).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} was reachable");
         }
@@ -703,6 +755,44 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("\"id\":\"u0\""));
         assert!(body.contains("\"byteLen\""));
+    }
+
+    /// The page's per-block cap is a transport limit, not a data loss: what it
+    /// drops has to be reachable through the block route.
+    #[tokio::test]
+    async fn a_clamped_block_can_be_read_past_the_page_cap() {
+        use crate::modules::transcript::MAX_BLOCK_BYTES;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("s.jsonl");
+        let body = "x".repeat(MAX_BLOCK_BYTES + 2_000);
+        std::fs::write(
+            &p,
+            format!("{{\"type\":\"user\",\"uuid\":\"u0\",\"message\":{{\"content\":\"{body}\"}}}}\n"),
+        )
+        .expect("write");
+
+        let (status, page) = get(state_with(Some(p.clone())), "/api/sessions/s1?t=secret").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(page.contains("\"truncated\":true"));
+        assert!(page.contains(&format!("\"fullBytes\":{}", body.len())));
+
+        let (status, chunk) = get(
+            state_with(Some(p.clone())),
+            &format!("/api/sessions/s1/blocks/0/0?t=secret&offset={MAX_BLOCK_BYTES}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(chunk.contains("\"eof\":true"));
+        assert!(chunk.contains(&format!("\"nextOffset\":{}", body.len())));
+
+        // A block index that does not exist is a stale address, not a 500.
+        let (status, _) = get(
+            state_with(Some(p)),
+            "/api/sessions/s1/blocks/0/9?t=secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

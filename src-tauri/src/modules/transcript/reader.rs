@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{cursor, Format, Message};
+use super::{char_boundary, clamp_all, cursor, Format, Message, MAX_BLOCK_BYTES};
 
 /// Backward paging starts by parsing this many lines and doubles until it has
 /// a full page. Keeps a 50-message request off a 20k-line transcript.
@@ -35,8 +35,96 @@ pub struct Append {
     pub next_line: usize,
 }
 
+/// A slice of one block's full payload, addressed by `(line, block index)`.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Chunk {
+    pub text: String,
+    /// Byte offset to ask for next. Always on a char boundary.
+    pub next_offset: usize,
+    /// Total payload length, so a client can show progress before finishing.
+    pub full_bytes: usize,
+    /// True once `next_offset` has reached the end of the payload.
+    pub eof: bool,
+}
+
 /// Read the newest `limit` messages, or the newest before line `before`.
 pub fn read_page(
+    path: &Path,
+    format: Format,
+    before: Option<usize>,
+    limit: usize,
+) -> std::io::Result<Page> {
+    let mut page = page_uncapped(path, format, before, limit)?;
+    clamp_all(&mut page.messages, MAX_BLOCK_BYTES);
+    Ok(page)
+}
+
+/// Read everything appended since `byte_offset`.
+pub fn read_append(
+    path: &Path,
+    format: Format,
+    byte_offset: u64,
+    next_line: usize,
+) -> std::io::Result<Append> {
+    let mut append = append_uncapped(path, format, byte_offset, next_line)?;
+    clamp_all(&mut append.messages, MAX_BLOCK_BYTES);
+    Ok(append)
+}
+
+/// Read `limit` bytes of one block's payload starting at `offset`, addressed by
+/// the owning message's `line` cursor and the block's index within it.
+///
+/// Stateless like the rest of the reader: the one source record is re-parsed
+/// per request with no cap applied, so a client can walk a multi-megabyte tool
+/// result to its end in bounded steps without the server holding a session.
+/// `None` means the address no longer resolves — the line was rewritten, or the
+/// block carries no text.
+pub fn read_block_chunk(
+    path: &Path,
+    format: Format,
+    line: usize,
+    index: usize,
+    offset: usize,
+    limit: usize,
+) -> std::io::Result<Option<Chunk>> {
+    let message = match format {
+        Format::Cursor => cursor::find_message(path, line)?,
+        _ => {
+            let bytes = std::fs::read(path)?;
+            let text = String::from_utf8_lossy(&bytes);
+            let lines: Vec<&str> = text.split('\n').collect();
+            // Every JSONL format emits at most one message per line, so the
+            // cursor addresses exactly one record to re-parse.
+            match lines.get(line) {
+                Some(l) => format.parse(&[*l], line).into_iter().next(),
+                None => None,
+            }
+        }
+    };
+
+    Ok(message
+        .as_ref()
+        .and_then(|m| m.blocks.get(index))
+        .and_then(|b| b.payload())
+        .map(|payload| slice(payload, offset, limit)))
+}
+
+fn slice(payload: &str, offset: usize, limit: usize) -> Chunk {
+    let full_bytes = payload.len();
+    // Both ends walk back to a boundary: a client echoing `next_offset` always
+    // lands on one, and a hand-written offset must not panic the server.
+    let start = char_boundary(payload, offset);
+    let end = char_boundary(payload, start.saturating_add(limit.max(1)));
+    Chunk {
+        text: payload[start..end].to_string(),
+        next_offset: end,
+        full_bytes,
+        eof: end >= full_bytes,
+    }
+}
+
+fn page_uncapped(
     path: &Path,
     format: Format,
     before: Option<usize>,
@@ -80,10 +168,9 @@ pub fn read_page(
     })
 }
 
-/// Read everything appended since `byte_offset`. Stops at the last complete
-/// line so a record still being written is picked up on the next call instead
-/// of being parsed torn.
-pub fn read_append(
+/// Stops at the last complete line so a record still being written is picked up
+/// on the next call instead of being parsed torn.
+fn append_uncapped(
     path: &Path,
     format: Format,
     byte_offset: u64,
@@ -97,7 +184,7 @@ pub fn read_append(
 
     // Truncated or rotated underneath us: start over rather than seek past EOF.
     if len < byte_offset {
-        let page = read_page(path, format, None, usize::MAX)?;
+        let page = page_uncapped(path, format, None, usize::MAX)?;
         return Ok(Append {
             next_line: page.total_lines,
             byte_offset: page.byte_len,
@@ -140,6 +227,7 @@ pub fn read_append(
 
 #[cfg(test)]
 mod tests {
+    use super::super::Block;
     use super::*;
     use std::io::Write;
 
@@ -251,6 +339,87 @@ mod tests {
         let app = read_append(&p, Format::Claude, 9_000_000, 500).expect("append");
         assert_eq!(app.messages.len(), 1);
         assert_eq!(app.messages[0].id, "u0");
+    }
+
+    /// Walks a block to its end the way the viewer does, returning everything
+    /// the chunks carried plus how many requests it took.
+    fn drain_block(p: &Path, line: usize, limit: usize) -> (String, usize) {
+        let mut text = String::new();
+        let mut offset = 0;
+        let mut requests = 0;
+        loop {
+            let chunk = read_block_chunk(p, Format::Claude, line, 0, offset, limit)
+                .expect("chunk")
+                .expect("block exists");
+            text.push_str(&chunk.text);
+            offset = chunk.next_offset;
+            requests += 1;
+            if chunk.eof {
+                assert_eq!(offset, chunk.full_bytes);
+                break;
+            }
+            assert!(requests < 1000, "not converging on eof");
+        }
+        (text, requests)
+    }
+
+    #[test]
+    fn a_clamped_block_reassembles_byte_identically_from_chunks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body = "x".repeat(MAX_BLOCK_BYTES * 3 + 17);
+        let p = write(dir.path(), "s.jsonl", &[claude_line("u0", &body)]);
+
+        // The page itself is capped, and says how much it left behind.
+        let page = read_page(&p, Format::Claude, None, 10).expect("page");
+        let block = &page.messages[0].blocks[0];
+        let Block::Text { text, truncated, full_bytes } = block else {
+            panic!("expected text, got {block:?}");
+        };
+        assert!(truncated);
+        assert_eq!(text.len(), MAX_BLOCK_BYTES);
+        assert_eq!(*full_bytes, body.len());
+
+        let (drained, requests) = drain_block(&p, page.messages[0].line, MAX_BLOCK_BYTES);
+        assert_eq!(drained, body);
+        assert_eq!(requests, 4);
+    }
+
+    #[test]
+    fn a_multibyte_char_is_never_split_across_a_chunk_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 3-byte chars against a chunk size that is not a multiple of 3, so
+        // every boundary lands mid-character unless it is walked back.
+        let body = "☃".repeat(4000);
+        let p = write(dir.path(), "s.jsonl", &[claude_line("u0", &body)]);
+
+        let (drained, _) = drain_block(&p, 0, 1024);
+        assert_eq!(drained, body);
+    }
+
+    #[test]
+    fn a_block_that_fits_arrives_in_one_chunk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = write(dir.path(), "s.jsonl", &[claude_line("u0", "short")]);
+
+        let chunk = read_block_chunk(&p, Format::Claude, 0, 0, 0, MAX_BLOCK_BYTES)
+            .expect("chunk")
+            .expect("block exists");
+        assert_eq!(chunk.text, "short");
+        assert!(chunk.eof);
+        assert_eq!(chunk.full_bytes, 5);
+    }
+
+    #[test]
+    fn an_address_that_no_longer_resolves_is_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = write(dir.path(), "s.jsonl", &[claude_line("u0", "a")]);
+
+        assert!(read_block_chunk(&p, Format::Claude, 99, 0, 0, 64)
+            .expect("chunk")
+            .is_none());
+        assert!(read_block_chunk(&p, Format::Claude, 0, 7, 0, 64)
+            .expect("chunk")
+            .is_none());
     }
 
     #[test]

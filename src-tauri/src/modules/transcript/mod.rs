@@ -6,8 +6,11 @@ pub mod reader;
 
 use serde::Serialize;
 
-/// Per-block payload cap. Tool results routinely carry whole files; a phone
-/// on a LAN link should never have to pull megabytes to render one message.
+/// Per-block payload cap for a transcript page or append. Tool results
+/// routinely carry whole files; a phone on a LAN link should never have to pull
+/// megabytes to render one message. What the cap drops is not lost — every
+/// block reports its `full_bytes`, and the client fetches the remainder on
+/// demand through `reader::read_block_chunk`.
 pub const MAX_BLOCK_BYTES: usize = 16 * 1024;
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,32 +21,62 @@ pub enum Role {
     System,
 }
 
+/// `full_bytes` is the payload's length *before* any transport cap, so a client
+/// holding a clamped block knows both that there is more and exactly how much,
+/// and can page the remainder by byte offset.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Block {
     Text {
         text: String,
         truncated: bool,
+        full_bytes: usize,
     },
     Thinking {
         text: String,
         truncated: bool,
+        full_bytes: usize,
     },
     ToolCall {
         id: String,
         name: String,
         input: String,
         truncated: bool,
+        full_bytes: usize,
     },
     ToolResult {
         id: String,
         output: String,
         is_error: bool,
         truncated: bool,
+        full_bytes: usize,
     },
     Image {
         alt: String,
     },
+}
+
+impl Block {
+    /// The block's payload text, or `None` for blocks that carry none.
+    pub fn payload(&self) -> Option<&str> {
+        match self {
+            Block::Text { text, .. } | Block::Thinking { text, .. } => Some(text),
+            Block::ToolCall { input, .. } => Some(input),
+            Block::ToolResult { output, .. } => Some(output),
+            Block::Image { .. } => None,
+        }
+    }
+
+    fn payload_mut(&mut self) -> Option<(&mut String, &mut bool)> {
+        match self {
+            Block::Text { text, truncated, .. } | Block::Thinking { text, truncated, .. } => {
+                Some((text, truncated))
+            }
+            Block::ToolCall { input, truncated, .. } => Some((input, truncated)),
+            Block::ToolResult { output, truncated, .. } => Some((output, truncated)),
+            Block::Image { .. } => None,
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -66,9 +99,9 @@ pub enum Format {
     Claude,
     Codex,
     CommandCode,
-    /// SQLite-backed, not line-oriented — `reader::read_page`/`read_append`
-    /// branch out to `cursor::read_page`/`read_append` before this format's
-    /// `parse` (which is never called) would come into play.
+    /// SQLite-backed, not line-oriented — every `reader` entry point branches
+    /// out to its `cursor` counterpart before this format's `parse` (which is
+    /// never called) would come into play.
     Cursor,
 }
 
@@ -96,32 +129,57 @@ impl Format {
     }
 }
 
-/// Truncate on a char boundary, reporting whether anything was dropped.
-pub fn clamp(s: &str) -> (String, bool) {
-    if s.len() <= MAX_BLOCK_BYTES {
-        return (s.to_string(), false);
-    }
-    let mut end = MAX_BLOCK_BYTES;
+/// Largest index at or below `at` that splits `s` between characters.
+pub fn char_boundary(s: &str, at: usize) -> usize {
+    let mut end = at.min(s.len());
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    (s[..end].to_string(), true)
+    end
+}
+
+/// Apply the transport cap to every block of every message.
+///
+/// Parsers deliberately build blocks with their payload intact and the cap is
+/// applied here instead, at the boundary where messages are about to be
+/// serialized to a client. That way the very same parse can also serve the
+/// range reads that fetch back what the cap dropped — no second, subtly
+/// different code path for "the full text".
+pub fn clamp_all(messages: &mut [Message], cap: usize) {
+    for m in messages {
+        for b in &mut m.blocks {
+            let Some((text, truncated)) = b.payload_mut() else {
+                continue;
+            };
+            if text.len() > cap {
+                let end = char_boundary(text, cap);
+                text.truncate(end);
+                *truncated = true;
+            }
+        }
+    }
 }
 
 pub fn text_block(s: &str) -> Option<Block> {
     if s.trim().is_empty() {
         return None;
     }
-    let (text, truncated) = clamp(s);
-    Some(Block::Text { text, truncated })
+    Some(Block::Text {
+        full_bytes: s.len(),
+        text: s.to_string(),
+        truncated: false,
+    })
 }
 
 pub fn thinking_block(s: &str) -> Option<Block> {
     if s.trim().is_empty() {
         return None;
     }
-    let (text, truncated) = clamp(s);
-    Some(Block::Thinking { text, truncated })
+    Some(Block::Thinking {
+        full_bytes: s.len(),
+        text: s.to_string(),
+        truncated: false,
+    })
 }
 
 /// Render a tool input/output value as display text. Strings pass through so a
@@ -135,22 +193,23 @@ pub fn value_to_text(v: &serde_json::Value) -> String {
 }
 
 pub fn tool_call_block(id: &str, name: &str, input: &serde_json::Value) -> Block {
-    let (input, truncated) = clamp(&value_to_text(input));
+    let input = value_to_text(input);
     Block::ToolCall {
         id: id.to_string(),
         name: name.to_string(),
+        full_bytes: input.len(),
         input,
-        truncated,
+        truncated: false,
     }
 }
 
 pub fn tool_result_block(id: &str, output: &str, is_error: bool) -> Block {
-    let (output, truncated) = clamp(output);
     Block::ToolResult {
         id: id.to_string(),
-        output,
+        full_bytes: output.len(),
+        output: output.to_string(),
         is_error,
-        truncated,
+        truncated: false,
     }
 }
 
@@ -187,20 +246,45 @@ pub fn output_text(output: Option<&serde_json::Value>) -> (String, bool) {
 mod tests {
     use super::*;
 
+    fn message_with(text: &str) -> Message {
+        Message {
+            id: "m".into(),
+            role: Role::User,
+            timestamp: String::new(),
+            line: 0,
+            blocks: vec![text_block(text).expect("block")],
+        }
+    }
+
     #[test]
-    fn clamp_never_splits_a_char() {
+    fn clamp_never_splits_a_char_and_keeps_the_full_length() {
         let s = "é".repeat(MAX_BLOCK_BYTES);
-        let (out, truncated) = clamp(&s);
+        let mut messages = [message_with(&s)];
+        clamp_all(&mut messages, MAX_BLOCK_BYTES);
+
+        let Block::Text { text, truncated, full_bytes } = &messages[0].blocks[0] else {
+            panic!("expected text");
+        };
         assert!(truncated);
-        assert!(out.len() <= MAX_BLOCK_BYTES);
-        assert!(s.starts_with(&out));
+        assert!(text.len() <= MAX_BLOCK_BYTES);
+        assert!(s.starts_with(text.as_str()));
+        // The dropped tail is still addressable: the client is told how far the
+        // payload actually runs.
+        assert_eq!(*full_bytes, s.len());
     }
 
     #[test]
     fn clamp_passes_short_strings_through() {
-        let (out, truncated) = clamp("hello");
-        assert_eq!(out, "hello");
-        assert!(!truncated);
+        let mut messages = [message_with("hello")];
+        clamp_all(&mut messages, MAX_BLOCK_BYTES);
+        assert_eq!(
+            messages[0].blocks,
+            vec![Block::Text {
+                text: "hello".into(),
+                truncated: false,
+                full_bytes: 5,
+            }]
+        );
     }
 
     #[test]

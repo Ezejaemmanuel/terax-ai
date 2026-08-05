@@ -1,4 +1,4 @@
-import type { Page, ProjectMeta, RemoteConfig } from "@/remote/lib/types";
+import type { Chunk, Page, ProjectMeta, RemoteConfig } from "@/remote/lib/types";
 
 /// The token arrives in the URL so a QR code can carry it. Kept in the address
 /// bar deliberately: a refresh has to keep working without a re-scan.
@@ -77,6 +77,22 @@ export function fetchPage(
   if (opts.before !== undefined) params.set("before", String(opts.before));
   params.set("limit", String(opts.limit ?? 50));
   return get<Page>(`/api/sessions/${encodeURIComponent(id)}?${params}`);
+}
+
+/// Reads one range of a single block's full payload, addressed by the owning
+/// message's `line` cursor and the block's index within that message. This is
+/// how a block the page had to clamp gets read to its end: each call returns the
+/// next slice plus the offset to ask for after it.
+export function fetchBlockChunk(
+  id: string,
+  line: number,
+  index: number,
+  offset: number,
+): Promise<Chunk> {
+  const params = new URLSearchParams({ offset: String(offset) });
+  return get<Chunk>(
+    `/api/sessions/${encodeURIComponent(id)}/blocks/${line}/${index}?${params}`,
+  );
 }
 
 /// EventSource cannot send headers, so the stream authenticates via the query

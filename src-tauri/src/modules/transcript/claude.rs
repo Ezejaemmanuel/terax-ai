@@ -149,7 +149,8 @@ mod tests {
             m.blocks,
             vec![Block::Text {
                 text: "hello there".into(),
-                truncated: false
+                truncated: false,
+                full_bytes: 11
             }]
         );
     }
@@ -213,7 +214,8 @@ mod tests {
             m.blocks,
             vec![Block::Text {
                 text: "real ask tail".into(),
-                truncated: false
+                truncated: false,
+                full_bytes: 13
             }]
         );
     }

@@ -1,17 +1,37 @@
 export type AgentId = "claude" | "codex" | "command-code" | "cursor";
 
+/// `truncated` means the page left part of this block behind to keep the
+/// transfer small; `fullBytes` is the payload's true length, and the remainder
+/// is fetched by address with `fetchBlockChunk`.
 export type Block =
-  | { kind: "text"; text: string; truncated: boolean }
-  | { kind: "thinking"; text: string; truncated: boolean }
-  | { kind: "toolCall"; id: string; name: string; input: string; truncated: boolean }
+  | { kind: "text"; text: string; truncated: boolean; fullBytes: number }
+  | { kind: "thinking"; text: string; truncated: boolean; fullBytes: number }
+  | {
+      kind: "toolCall";
+      id: string;
+      name: string;
+      input: string;
+      truncated: boolean;
+      fullBytes: number;
+    }
   | {
       kind: "toolResult";
       id: string;
       output: string;
       isError: boolean;
       truncated: boolean;
+      fullBytes: number;
     }
   | { kind: "image"; alt: string };
+
+/// One range of a block's full payload.
+export interface Chunk {
+  text: string;
+  /// Byte offset to ask for next; equals `fullBytes` once `eof` is true.
+  nextOffset: number;
+  fullBytes: number;
+  eof: boolean;
+}
 
 export interface Message {
   id: string;

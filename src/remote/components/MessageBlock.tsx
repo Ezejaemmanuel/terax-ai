@@ -1,27 +1,21 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
 import { cn } from "@/lib/utils";
 import { useRemotePrefs } from "@/remote/lib/prefs";
-import type { RenderBlock } from "@/remote/lib/mergeTranscript";
+import { useBlockChunks } from "@/remote/lib/useBlockChunks";
+import type { BlockAddress, RenderBlock } from "@/remote/lib/mergeTranscript";
+import { ExpandTail } from "@/remote/components/ExpandTail";
 import { ToolCard } from "@/remote/components/ToolCard";
-
-function Truncated() {
-  return (
-    <div className="mt-1 text-[11px] text-muted-foreground/70">
-      truncated for transport
-    </div>
-  );
-}
 
 function Collapsible({
   label,
   body,
-  truncated,
+  footer,
   defaultOpen,
 }: {
   label: string;
   body: string;
-  truncated: boolean;
+  footer: ReactNode;
   defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -52,7 +46,7 @@ function Collapsible({
           <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
             {body}
           </pre>
-          {truncated && <Truncated />}
+          {footer}
         </div>
       )}
     </div>
@@ -62,6 +56,50 @@ function Collapsible({
 function firstLine(s: string, max = 72) {
   const line = s.split("\n").find((l) => l.trim().length > 0) ?? "";
   return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+function TextBlock({
+  text,
+  truncated,
+  fullBytes,
+  at,
+}: {
+  text: string;
+  truncated: boolean;
+  fullBytes: number;
+  at: BlockAddress;
+}) {
+  const chunks = useBlockChunks(text, fullBytes, truncated, at);
+  return (
+    <div className="prose-remote">
+      <Streamdown>{chunks.text}</Streamdown>
+      <ExpandTail state={chunks} />
+    </div>
+  );
+}
+
+function ThinkingBlock({
+  text,
+  truncated,
+  fullBytes,
+  at,
+  defaultOpen,
+}: {
+  text: string;
+  truncated: boolean;
+  fullBytes: number;
+  at: BlockAddress;
+  defaultOpen: boolean;
+}) {
+  const chunks = useBlockChunks(text, fullBytes, truncated, at);
+  return (
+    <Collapsible
+      label={`thinking · ${firstLine(text, 56)}`}
+      body={chunks.text}
+      footer={<ExpandTail state={chunks} />}
+      defaultOpen={defaultOpen}
+    />
+  );
 }
 
 export const MessageBlock = memo(function MessageBlock({
@@ -74,18 +112,21 @@ export const MessageBlock = memo(function MessageBlock({
   switch (block.kind) {
     case "text":
       return (
-        <div className="prose-remote">
-          <Streamdown>{block.text}</Streamdown>
-          {block.truncated && <Truncated />}
-        </div>
+        <TextBlock
+          text={block.text}
+          truncated={block.truncated}
+          fullBytes={block.fullBytes}
+          at={block.at}
+        />
       );
 
     case "thinking":
       return (
-        <Collapsible
-          label={`thinking · ${firstLine(block.text, 56)}`}
-          body={block.text}
+        <ThinkingBlock
+          text={block.text}
           truncated={block.truncated}
+          fullBytes={block.fullBytes}
+          at={block.at}
           defaultOpen={accordionsOpen}
         />
       );

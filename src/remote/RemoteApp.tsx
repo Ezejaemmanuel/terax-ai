@@ -19,7 +19,7 @@ import { useRemotePrefs } from "@/remote/lib/prefs";
 import { useHashSession } from "@/remote/lib/useHashSession";
 import { useIndex } from "@/remote/lib/useIndex";
 import { useMediaQuery } from "@/remote/lib/useMediaQuery";
-import { SessionCwdProvider } from "@/remote/lib/sessionContext";
+import { SessionProvider } from "@/remote/lib/sessionContext";
 import { useStream } from "@/remote/lib/useStream";
 import { useTranscript } from "@/remote/lib/useTranscript";
 import type { AgentId, ProjectMeta, SessionMeta } from "@/remote/lib/types";
@@ -391,7 +391,7 @@ export function RemoteApp() {
               </Centered>
             )}
             {!transcript.loading && !transcript.error && (
-              <SessionCwdProvider cwd={current?.cwd ?? null}>
+              <SessionProvider id={sessionId} cwd={current?.cwd ?? null}>
                 <Transcript
                   key={sessionId}
                   messages={transcript.messages}
@@ -399,7 +399,7 @@ export function RemoteApp() {
                   loadingOlder={transcript.loadingOlder}
                   onLoadOlder={loadOlder}
                 />
-              </SessionCwdProvider>
+              </SessionProvider>
             )}
           </>
         )}

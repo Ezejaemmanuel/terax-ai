@@ -71,6 +71,9 @@ type Row = {
   projectPath: string;
 };
 
+/// Sort key for the list: whatever wants a human first, then the rest of the
+/// live terminals, then everything that is merely on disk (no status at all),
+/// each band ordered newest-first.
 function rank(status: AgentStatus | undefined): number {
   if (!status) return 3;
   if (status === "attention") return 0;
@@ -99,11 +102,11 @@ export function TerminalPanel({
       for (const session of project.sessions) {
         if (!session.readable) continue;
         if (agentFilter !== "all" && session.agent !== agentFilter) continue;
-        // `statuses` only carries an entry while its pty is alive (see
-        // useStream), so this is "currently open", not "ever seen" — the
-        // session index below is built from history files on disk and would
-        // otherwise list every terminal that has ever run.
-        if (!(session.id in statuses)) continue;
+        // Every session in the index is listed, for every agent, whether or not
+        // a pty is currently running it: from a phone, a terminal you are *not*
+        // driving is exactly the one you want to catch up on. `statuses` only
+        // carries an entry while its pty is alive (see useStream), so it is
+        // decoration here — the status dot and the sort order — never a filter.
         all.push({
           session,
           projectName: project.name,
@@ -259,8 +262,8 @@ export function TerminalPanel({
         {rows.length === 0 ? (
           <p className="px-3 py-4 text-center text-[11px] text-muted-foreground/60">
             {agentFilter === "all"
-              ? "No terminals open right now."
-              : "No matching terminals open right now."}
+              ? "No terminals yet."
+              : `No ${FILTER_LABEL[agentFilter]} terminals yet.`}
           </p>
         ) : grouped ? (
           <div className="pb-2">

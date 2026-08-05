@@ -19,6 +19,8 @@ import { cn } from "@/lib/utils";
 import { DiffView } from "@/remote/components/DiffView";
 import { toRelativePath } from "@/remote/lib/path";
 import { useSessionCwd } from "@/remote/lib/sessionContext";
+import { useBlockChunks } from "@/remote/lib/useBlockChunks";
+import { ExpandTail } from "@/remote/components/ExpandTail";
 import type { ToolRowBlock } from "@/remote/lib/mergeTranscript";
 
 type HugeIcon = Parameters<typeof HugeiconsIcon>[0]["icon"];
@@ -188,8 +190,26 @@ export const ToolCard = memo(function ToolCard({
 }) {
   const cwd = useSessionCwd();
   const { label, icon: Icon } = toolMeta(block.name);
-  const summary = deriveSummary(block.name, block.input, cwd);
-  const inputObj = useMemo(() => parseInput(block.input), [block.input]);
+
+  // The two halves of a tool row come from different records, so each expands
+  // against its own address.
+  const input = useBlockChunks(
+    block.input,
+    block.inputFullBytes,
+    block.inputTruncated,
+    block.inputAt,
+  );
+  const output = useBlockChunks(
+    block.output ?? "",
+    block.outputFullBytes,
+    block.outputTruncated,
+    block.outputAt,
+  );
+
+  // Parsing and diffing run on the text as it stands: a clamped input is not
+  // valid JSON, so those views fall back to raw text until it is expanded.
+  const summary = deriveSummary(block.name, input.text, cwd);
+  const inputObj = useMemo(() => parseInput(input.text), [input.text]);
   const editPreview = useMemo(
     () => (isFileEditTool(block.name) ? extractEdit(inputObj) : null),
     [block.name, inputObj],
@@ -277,18 +297,14 @@ export const ToolCard = memo(function ToolCard({
               </div>
             ) : inputObj ? (
               <div className="prose-remote max-h-56 overflow-y-auto overflow-x-auto text-[11px]">
-                <Streamdown>{`\`\`\`json\n${block.input}\n\`\`\``}</Streamdown>
+                <Streamdown>{`\`\`\`json\n${input.text}\n\`\`\``}</Streamdown>
               </div>
             ) : (
               <pre className="max-h-56 overflow-y-auto overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
-                {block.input}
+                {input.text}
               </pre>
             )}
-            {block.inputTruncated && (
-              <div className="text-[11px] text-muted-foreground/70">
-                truncated for transport
-              </div>
-            )}
+            <ExpandTail state={input} />
           </div>
 
           {block.pending ? (
@@ -313,13 +329,9 @@ export const ToolCard = memo(function ToolCard({
                   block.isError && "bg-destructive/10 px-2 py-1.5 text-destructive",
                 )}
               >
-                {block.output}
+                {output.text}
               </pre>
-              {block.outputTruncated && (
-                <div className="text-[11px] text-muted-foreground/70">
-                  truncated for transport
-                </div>
-              )}
+              <ExpandTail state={output} />
             </div>
           )}
         </div>
