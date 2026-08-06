@@ -24,6 +24,7 @@ if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
 }
 
+
 // Reap PTY sessions orphaned by a prior webview load before any tab spawns.
 await invoke("pty_close_all").catch(() => {});
 
